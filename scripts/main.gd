@@ -116,9 +116,9 @@ var _spectrum: AudioEffectSpectrumAnalyzerInstance
 var _crt_material: ShaderMaterial
 # Кольцевые буферы истории (размер — степень двойки) + монотонные деки min/max.
 const HISTORY_POW2 := 64
-var _bass_hist: PackedFloat32Array = PackedFloat32Array.create(HISTORY_POW2)
-var _mid_hist: PackedFloat32Array = PackedFloat32Array.create(HISTORY_POW2)
-var _treble_hist: PackedFloat32Array = PackedFloat32Array.create(HISTORY_POW2)
+var _bass_hist: PackedFloat32Array
+var _mid_hist: PackedFloat32Array
+var _treble_hist: PackedFloat32Array
 var _bass_min: Array = []
 var _bass_max: Array = []
 var _mid_min: Array = []
@@ -153,6 +153,17 @@ var _answer_locked: bool = false
 func _ready() -> void:
 	_load_settings()
 	_apply_terminal_theme()
+
+	# Инициализация кольцевых буферов истории спектра (заполнены нулями).
+	_bass_hist = PackedFloat32Array()
+	_bass_hist.resize(HISTORY_POW2)
+	_bass_hist.fill(0.0)
+	_mid_hist = PackedFloat32Array()
+	_mid_hist.resize(HISTORY_POW2)
+	_mid_hist.fill(0.0)
+	_treble_hist = PackedFloat32Array()
+	_treble_hist.resize(HISTORY_POW2)
+	_treble_hist.fill(0.0)
 
 	_create_bars()
 	_setup_crt_overlay()
