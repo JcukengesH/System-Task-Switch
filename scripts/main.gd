@@ -1,6 +1,7 @@
 extends Control
 
 const START_TIME := 15
+const MAX_TIME := 30.0          # верхний предел таймера (бар показывает честно)
 const BONUS_PER_CORRECT := 1.0
 const MAX_ERRORS_PER_STAGE := 3
 const GARBAGE_TIMEOUT := 0.75
@@ -48,6 +49,12 @@ const SETTINGS_PATH := "user://terminal_settings.cfg"
 
 # Секция истории для аудио-реактивного шейдера.
 const HISTORY_LEN := 60
+
+const MOD_THRESHOLDS := {
+	"letters": {"randomQuadrant": 20, "flip": 40, "inverse": 60, "garbage": 80},
+	"shapes": {"missingEdge": 120, "mathExpression": 140, "twoShapes": 160, "garbage": 180},
+	"stroop": {"inverse": 220, "flip": 240, "shuffle": 260, "garbage": 280},
+}
 
 @onready var quadrants: Array = [
 	$Margin/VBox/Grid/Quadrant0,
@@ -107,9 +114,19 @@ var _current_music_key: String = ""
 # Аудио-спектр для шейдера.
 var _spectrum: AudioEffectSpectrumAnalyzerInstance
 var _crt_material: ShaderMaterial
-var _bass_hist: PackedFloat32Array = PackedFloat32Array()
-var _mid_hist: PackedFloat32Array = PackedFloat32Array()
-var _treble_hist: PackedFloat32Array = PackedFloat32Array()
+# Кольцевые буферы истории (размер — степень двойки) + монотонные деки min/max.
+const HISTORY_POW2 := 64
+var _bass_hist: PackedFloat32Array = PackedFloat32Array.create(HISTORY_POW2)
+var _mid_hist: PackedFloat32Array = PackedFloat32Array.create(HISTORY_POW2)
+var _treble_hist: PackedFloat32Array = PackedFloat32Array.create(HISTORY_POW2)
+var _bass_min: Array = []
+var _bass_max: Array = []
+var _mid_min: Array = []
+var _mid_max: Array = []
+var _treble_min: Array = []
+var _treble_max: Array = []
+var _hist_idx: int = 0
+var _hist_count: int = 0
 var _bass_fast: float = 0.0
 var _bass_slow: float = 0.0
 var _mid_fast: float = 0.0
@@ -117,6 +134,7 @@ var _mid_slow: float = 0.0
 var _treble_fast: float = 0.0
 var _treble_slow: float = 0.0
 var _beat_punch: float = 0.0
+var _pulse_sent: float = -1.0
 
 # Менеджер экранов.
 var _screen_layer: CanvasLayer
@@ -148,9 +166,6 @@ func _ready() -> void:
 	_apply_sfx_volume()
 	_apply_crt_setting()
 
-func _apply_sfx_volume() -> void:
-	SFX.set_volume(sfx_volume)
-
 	# Применяем шрифт ко ВСЕМУ дереву (включая динамически созданные ноды).
 	if _terminal_font:
 		_apply_font_recursive(self, _terminal_font)
@@ -171,6 +186,12 @@ func _apply_sfx_volume() -> void:
 	update_combo_display()
 
 	_show_boot_screen()
+
+
+func _apply_sfx_volume() -> void:
+	# ВАЖНО: только применение громкости. Ранее сюда ошибочно попал хвост
+	# _ready(), из-за чего любое изменение настроек перезапускало boot-экран.
+	SFX.set_volume(sfx_volume)
 
 
 # ---------- CRT-оверлей ----------
@@ -195,6 +216,9 @@ func _setup_crt_overlay() -> void:
 	else:
 		push_warning("crt.gdshader не найден, оверлей отключён.")
 		layer.queue_free()
+		# Обязательно обнуляем ссылку: иначе _apply_crt_setting() будет
+		# обращаться к удалённому узлу при переключении CRT в настройках.
+		_crt_layer = null
 		return
 
 	layer.add_child(rect)
@@ -318,9 +342,9 @@ func _process(delta: float) -> void:
 	var mid_db: float    = _to_db(mid_raw)
 	var treble_db: float = _to_db(treble_raw)
 
-	var bass_n: float   = _adaptive_norm(bass_db, _bass_hist)
-	var mid_n: float    = _adaptive_norm(mid_db, _mid_hist)
-	var treble_n: float = _adaptive_norm(treble_db, _treble_hist)
+	var bass_n: float   = _adaptive_norm(bass_db, _bass_hist, _bass_min, _bass_max)
+	var mid_n: float    = _adaptive_norm(mid_db, _mid_hist, _mid_min, _mid_max)
+	var treble_n: float = _adaptive_norm(treble_db, _treble_hist, _treble_min, _treble_max)
 
 	var fast_rate: float = 45.0
 	var slow_rate: float = 2.0
@@ -348,11 +372,12 @@ func _process(delta: float) -> void:
 	_crt_material.set_shader_parameter("music_pulse",  _beat_punch)
 
 	if current_state == State.GAME:
-		for q in quadrants:
-			if q.is_active_zone:
-				q.set_pulse(_beat_punch)
-			else:
-				q.set_pulse(0.0)
+		# Пульс обновляем только когда величина реально изменилась — иначе
+		# set_pulse -> queue_redraw у активного квадранта каждый кадр.
+		if absf(_beat_punch - _pulse_sent) > 0.005:
+			_pulse_sent = _beat_punch
+			for q in quadrants:
+				q.set_pulse(_beat_punch if q.is_active_zone else 0.0)
 
 
 func _to_db(magnitude: float) -> float:
@@ -361,15 +386,37 @@ func _to_db(magnitude: float) -> float:
 	return clampf(linear_to_db(magnitude), -80.0, 0.0)
 
 
-func _adaptive_norm(value: float, history: PackedFloat32Array) -> float:
-	history.push_back(value)
-	while history.size() > HISTORY_LEN:
-		history.remove_at(0)
-	var mn: float = 1e9
-	var mx: float = -1e9
-	for v in history:
-		if v < mn: mn = v
-		if v > mx: mx = v
+func _adaptive_norm(value: float, hist: PackedFloat32Array, minq: Array, maxq: Array) -> float:
+	# Скользящее окно min/max: кольцевой буфер фикс. размера + монотонные деки.
+	# Было: O(HISTORY_LEN) на поиск min/max + remove_at(0) (сдвиг массива) каждый кадр.
+	# Стало: амортизированно O(1).
+	var old_value: float = 0.0
+	var has_old: bool = _hist_count >= HISTORY_LEN
+	if has_old:
+		old_value = hist[_hist_idx]
+	hist[_hist_idx] = value
+	_hist_idx = (_hist_idx + 1) & (HISTORY_POW2 - 1)
+	_hist_count = mini(_hist_count + 1, HISTORY_LEN)
+
+	# Убираем из дек устаревающее значение (только если оно ещё головное —
+	# иначе оно уже было удалено как «поглощённое» более новым).
+	if has_old:
+		while not minq.is_empty() and minq[0] == old_value:
+			minq.pop_front()
+		while not maxq.is_empty() and maxq[0] == old_value:
+			maxq.pop_front()
+	# Инкрементально вставляем новое значение, поддерживая монотонность.
+	while not minq.is_empty() and minq[minq.size() - 1] > value:
+		minq.pop_back()
+	minq.push_back(value)
+	while not maxq.is_empty() and maxq[maxq.size() - 1] < value:
+		maxq.pop_back()
+	maxq.push_back(value)
+
+	if minq.is_empty() or maxq.is_empty():
+		return 0.0
+	var mn: float = minq[0]
+	var mx: float = maxq[0]
 	var rng: float = mx - mn
 	if rng < 3.0:
 		return 0.0
@@ -390,7 +437,7 @@ func _create_bars() -> void:
 	timer_bar.name = "timer_bar"
 	timer_bar.font_size = 12
 	timer_bar.style = StatBar.Style.SIMPLE
-	timer_bar.max_value = 120.0
+	timer_bar.max_value = MAX_TIME
 	timer_bar.anchor_left = 0.0
 	timer_bar.anchor_right = 1.0
 	timer_bar.anchor_top = 0.0
@@ -457,11 +504,14 @@ func flash_error_number(n: int) -> void:
 	_error_tween.tween_callback(func() -> void: error_overlay.visible = false)
 
 
-func _flash_error_remaining() -> void:
-	var remaining: int = MAX_ERRORS_PER_STAGE - errors_in_stage - 1
-	if remaining < 0:
-		return
-	flash_error_number(remaining)
+func _register_error_and_flash() -> bool:
+	# Инкрементирует счётчик ошибок и показывает, сколько ошибок ОСТАЛОСЬ.
+	# Возвращает true, если лимит исчерпан (игру нужно заканчивать).
+	errors_in_stage += 1
+	if errors_in_stage >= MAX_ERRORS_PER_STAGE:
+		return true
+	flash_error_number(MAX_ERRORS_PER_STAGE - errors_in_stage)
+	return false
 
 
 func _style_button(btn: Button) -> void:
@@ -806,8 +856,8 @@ func _save_settings() -> void:
 	else:
 		cfg.set_value("input", "answer2_type", "key")
 		cfg.set_value("input", "answer2_value", binding_answer2.keycode)
-		cfg.set_value("audio", "volume", music_volume)
-		cfg.set_value("audio", "sfx_volume", sfx_volume)
+	cfg.set_value("audio", "volume", music_volume)
+	cfg.set_value("audio", "sfx_volume", sfx_volume)
 	cfg.set_value("video", "crt", crt_enabled)
 	cfg.set_value("video", "music_fx", music_fx_enabled)
 	cfg.save(SETTINGS_PATH)
@@ -881,7 +931,7 @@ func _apply_audio_settings() -> void:
 
 
 func _apply_crt_setting() -> void:
-	if _crt_layer:
+	if is_instance_valid(_crt_layer):
 		_crt_layer.visible = crt_enabled
 
 func _apply_music_fx_setting() -> void:
@@ -976,23 +1026,12 @@ func get_stage_index(m: String) -> int:
 
 
 func get_modifiers_for_submode(submode: String) -> Dictionary:
-	var c := combo
+	# Модификаторы описаны данными (MOD_THRESHOLDS), а не if-цепочкой.
 	var mods := {}
-	if submode == "letters":
-		if c >= 20: mods["randomQuadrant"] = true
-		if c >= 40: mods["flip"] = true
-		if c >= 60: mods["inverse"] = true
-		if c >= 80: mods["garbage"] = true
-	elif submode == "shapes":
-		if c >= 120: mods["missingEdge"] = true
-		if c >= 140: mods["mathExpression"] = true
-		if c >= 160: mods["twoShapes"] = true
-		if c >= 180: mods["garbage"] = true
-	elif submode == "stroop":
-		if c >= 220: mods["inverse"] = true
-		if c >= 240: mods["flip"] = true
-		if c >= 260: mods["shuffle"] = true
-		if c >= 280: mods["garbage"] = true
+	var thresholds: Dictionary = MOD_THRESHOLDS.get(submode, {})
+	for key in thresholds:
+		if combo >= int(thresholds[key]):
+			mods[key] = true
 	return mods
 
 
@@ -1155,12 +1194,17 @@ func generate_stroop_item(mods: Dictionary) -> Dictionary:
 
 # ---------- Отображение ----------
 func display_item(item: Dictionary, quad_index: int) -> void:
-	for q in quadrants:
-		q.clear_item()
-		q.set_active(false)
-		q.set_transform_effect("none")
+	# Оптимизация: раньше трогались все 4 квадранта на каждое задание.
+	# Достаточно очистить предыдущий активный и подготовить новый.
+	if current_quadrant >= 0 and current_quadrant < quadrants.size() and current_quadrant != quad_index:
+		var prev = quadrants[current_quadrant]
+		prev.clear_item()
+		prev.set_active(false)
+		prev.set_transform_effect("none")
 
 	var quad = quadrants[quad_index]
+	quad.clear_item()
+	quad.set_transform_effect("none")
 	quad.set_active(true)
 
 	match item["type"]:
@@ -1212,22 +1256,32 @@ func show_next_item() -> void:
 	if waiting_for_garbage:
 		return
 
+	const STAGE_TIME_BONUS := 5.0
 	var new_mode := get_main_mode(combo)
 	if new_mode != mode:
 		mode = new_mode
 		errors_in_stage = 0
 		_update_music_for_mode()
-		if new_mode == "shapes" and not added100:
-			timer_value += 5.0
-			added100 = true
-			update_timer_display()
-		elif new_mode == "stroop" and not added200:
-			timer_value += 5.0
-			added200 = true
-			update_timer_display()
-		elif new_mode == "master" and not added300:
-			timer_value += 5.0
-			added300 = true
+		# Бонус времени за переход на новый этап (один раз на этап).
+		var bonus_threshold := 0
+		match new_mode:
+			"shapes": bonus_threshold = 100
+			"stroop": bonus_threshold = 200
+			"master": bonus_threshold = 300
+		if bonus_threshold > 0 and combo >= bonus_threshold:
+			match bonus_threshold:
+				100:
+					if not added100:
+						added100 = true
+						timer_value += STAGE_TIME_BONUS
+				200:
+					if not added200:
+						added200 = true
+						timer_value += STAGE_TIME_BONUS
+				300:
+					if not added300:
+						added300 = true
+						timer_value += STAGE_TIME_BONUS
 			update_timer_display()
 
 	var item := generate_item()
@@ -1250,9 +1304,11 @@ func show_next_item() -> void:
 
 # ---------- Обновление верхних полосок ----------
 func update_timer_display() -> void:
-	var display := maxf(0.0, timer_value)
+	# Ограничиваем и отображаемое значение, и само поле: иначе бар (max_value)
+	# «врал» бы при накоплении времени выше предела.
+	timer_value = clampf(timer_value, 0.0, MAX_TIME)
 	if timer_bar:
-		timer_bar.value = display
+		timer_bar.value = timer_value
 
 
 func update_combo_display() -> void:
@@ -1283,11 +1339,9 @@ func handle_answer(button: int) -> void:
 		if mode == "master":
 			end_game("master_error")
 			return
-		errors_in_stage += 1
-		if errors_in_stage >= MAX_ERRORS_PER_STAGE:
+		if _register_error_and_flash():
 			end_game("errors_limit")
 			return
-		_flash_error_remaining()
 		reset_combo_to_mode_start()
 		show_next_item()
 		return
@@ -1331,11 +1385,9 @@ func handle_answer(button: int) -> void:
 		if mode == "master":
 			end_game("master_error")
 			return
-		errors_in_stage += 1
-		if errors_in_stage >= MAX_ERRORS_PER_STAGE:
+		if _register_error_and_flash():
 			end_game("errors_limit")
 			return
-		_flash_error_remaining()
 		reset_combo_to_mode_start()
 		show_next_item()
 
@@ -1382,7 +1434,7 @@ func start_game(initial_combo: int = -1) -> void:
 	if initial_combo < 0:
 		initial_combo = debug_start_combo
 	else:
-		debug_start_combo = initial_combo
+		debug_start_combo = maxi(initial_combo, 0)
 
 	countdown_timer.stop()
 	garbage_timer.stop()
@@ -1391,9 +1443,7 @@ func start_game(initial_combo: int = -1) -> void:
 	paused = false
 	if pause_indicator:
 		pause_indicator.visible = false
-	errors_in_stage = 0
 	_answer_locked = false
-	added100 = initial_combo >= 100
 
 	active = true
 	timer_value = float(START_TIME)
