@@ -50,6 +50,9 @@ const SETTINGS_PATH := "user://terminal_settings.cfg"
 # Секция истории для аудио-реактивного шейдера.
 const HISTORY_LEN := 60
 
+# Бонус времени за переход на новый этап (порог комбо, один раз на этап).
+const STAGE_BONUSES := {"shapes": 100, "stroop": 200, "master": 300}
+
 const MOD_THRESHOLDS := {
 	"letters": {"randomQuadrant": 20, "flip": 40, "inverse": 60, "garbage": 80},
 	"shapes": {"missingEdge": 120, "mathExpression": 140, "twoShapes": 160, "garbage": 180},
@@ -77,9 +80,8 @@ var current_item: Dictionary = {}
 var current_quadrant := -1
 var order_index := 0
 var waiting_for_garbage := false
-var added100 := false
-var added200 := false
-var added300 := false
+# Пороги бонусов времени, уже выданных в текущей партии.
+var _stage_bonus_given: Dictionary = {}
 var mode := "letters"
 var errors_in_stage: int = 0
 var debug_start_combo: int = 0
@@ -114,19 +116,15 @@ var _current_music_key: String = ""
 # Аудио-спектр для шейдера.
 var _spectrum: AudioEffectSpectrumAnalyzerInstance
 var _crt_material: ShaderMaterial
-# Кольцевые буферы истории (размер — степень двойки) + монотонные деки min/max.
-const HISTORY_POW2 := 64
+# История спектра: кольцевой буфер фикс. размера + монотонные деки min/max
+# (деки хранят «логические» инкрементальные индексы, поэтому маскирование не нужно).
 var _bass_hist: PackedFloat32Array
 var _mid_hist: PackedFloat32Array
 var _treble_hist: PackedFloat32Array
-var _bass_min: Array = []
-var _bass_max: Array = []
-var _mid_min: Array = []
-var _mid_max: Array = []
-var _treble_min: Array = []
-var _treble_max: Array = []
+var _bass_state: Dictionary = {}
+var _mid_state: Dictionary = {}
+var _treble_state: Dictionary = {}
 var _hist_idx: int = 0
-var _hist_count: int = 0
 var _bass_fast: float = 0.0
 var _bass_slow: float = 0.0
 var _mid_fast: float = 0.0
@@ -135,6 +133,9 @@ var _treble_fast: float = 0.0
 var _treble_slow: float = 0.0
 var _beat_punch: float = 0.0
 var _pulse_sent: float = -1.0
+# Кэш последних отправленных в шейдер значений: не дёргать
+# set_shader_parameter каждый кадр одинаковыми числами.
+var _shader_cache: Dictionary = {}
 
 # Менеджер экранов.
 var _screen_layer: CanvasLayer
@@ -154,16 +155,17 @@ func _ready() -> void:
 	_load_settings()
 	_apply_terminal_theme()
 
-	# Инициализация кольцевых буферов истории спектра (заполнены нулями).
-	_bass_hist = PackedFloat32Array()
-	_bass_hist.resize(HISTORY_POW2)
-	_bass_hist.fill(0.0)
-	_mid_hist = PackedFloat32Array()
-	_mid_hist.resize(HISTORY_POW2)
-	_mid_hist.fill(0.0)
-	_treble_hist = PackedFloat32Array()
-	_treble_hist.resize(HISTORY_POW2)
-	_treble_hist.fill(0.0)
+	# Инициализация истории спектра: кольцевые буферы, заполненные нулями.
+	var h := PackedFloat32Array()
+	h.resize(HISTORY_LEN)
+	h.fill(0.0)
+	_bass_hist = h.duplicate()
+	_mid_hist = h.duplicate()
+	_treble_hist = h.duplicate()
+	_bass_state = {"min_idx": [], "min_val": [], "max_idx": [], "max_val": []}
+	_mid_state = {"min_idx": [], "min_val": [], "max_idx": [], "max_val": []}
+	_treble_state = {"min_idx": [], "min_val": [], "max_idx": [], "max_val": []}
+	_hist_idx = 0
 
 	_create_bars()
 	_setup_crt_overlay()
@@ -353,9 +355,9 @@ func _process(delta: float) -> void:
 	var mid_db: float    = _to_db(mid_raw)
 	var treble_db: float = _to_db(treble_raw)
 
-	var bass_n: float   = _adaptive_norm(bass_db, _bass_hist, _bass_min, _bass_max)
-	var mid_n: float    = _adaptive_norm(mid_db, _mid_hist, _mid_min, _mid_max)
-	var treble_n: float = _adaptive_norm(treble_db, _treble_hist, _treble_min, _treble_max)
+	var bass_n: float   = _adaptive_norm(bass_db, _bass_hist, _bass_state)
+	var mid_n: float    = _adaptive_norm(mid_db, _mid_hist, _mid_state)
+	var treble_n: float = _adaptive_norm(treble_db, _treble_hist, _treble_state)
 
 	var fast_rate: float = 45.0
 	var slow_rate: float = 2.0
@@ -377,10 +379,10 @@ func _process(delta: float) -> void:
 	else:
 		_beat_punch = maxf(0.0, _beat_punch - delta * 3.5)
 
-	_crt_material.set_shader_parameter("music_bass",   bass_trans)
-	_crt_material.set_shader_parameter("music_mid",    mid_trans)
-	_crt_material.set_shader_parameter("music_treble", treble_trans)
-	_crt_material.set_shader_parameter("music_pulse",  _beat_punch)
+	_set_shader_param_cached("music_bass",   bass_trans)
+	_set_shader_param_cached("music_mid",    mid_trans)
+	_set_shader_param_cached("music_treble", treble_trans)
+	_set_shader_param_cached("music_pulse",  _beat_punch)
 
 	if current_state == State.GAME:
 		# Пульс обновляем только когда величина реально изменилась — иначе
@@ -397,32 +399,37 @@ func _to_db(magnitude: float) -> float:
 	return clampf(linear_to_db(magnitude), -80.0, 0.0)
 
 
-func _adaptive_norm(value: float, hist: PackedFloat32Array, minq: Array, maxq: Array) -> float:
-	# Скользящее окно min/max: кольцевой буфер фикс. размера + монотонные деки.
-	# Было: O(HISTORY_LEN) на поиск min/max + remove_at(0) (сдвиг массива) каждый кадр.
-	# Стало: амортизированно O(1).
-	var old_value: float = 0.0
-	var has_old: bool = _hist_count >= HISTORY_LEN
-	if has_old:
-		old_value = hist[_hist_idx]
-	hist[_hist_idx] = value
-	_hist_idx = (_hist_idx + 1) & (HISTORY_POW2 - 1)
-	_hist_count = mini(_hist_count + 1, HISTORY_LEN)
+func _adaptive_norm(value: float, hist: PackedFloat32Array, state: Dictionary) -> float:
+	# Скользящее окно min/max: кольцевой буфер фикс. размера + монотонные деки
+	# (пары [индекс_кольца, значение]). Амортизированно O(1) на кадр.
+	# Было: O(HISTORY_LEN) на поиск min/max + remove_at(0) (сдвиг массива).
+	var idxs: Array = state["min_idx"]
+	var minq: Array = state["min_val"]
+	var idxe: Array = state["max_idx"]
+	var maxq: Array = state["max_val"]
 
-	# Убираем из дек устаревающее значение (только если оно ещё головное —
-	# иначе оно уже было удалено как «поглощённое» более новым).
-	if has_old:
-		while not minq.is_empty() and minq[0] == old_value:
-			minq.pop_front()
-		while not maxq.is_empty() and maxq[0] == old_value:
-			maxq.pop_front()
-	# Инкрементально вставляем новое значение, поддерживая монотонность.
-	while not minq.is_empty() and minq[minq.size() - 1] > value:
+	var oldest: int = _hist_idx - HISTORY_LEN
+	var newest: int = _hist_idx  # слот, который будет перезаписан
+	hist[_hist_idx & (HISTORY_LEN - 1)] = value
+	_hist_idx += 1
+
+	while not idxs.is_empty() and (idxs[0] <= oldest or idxs[0] >= newest):
+		idxs.pop_front()
+		minq.pop_front()
+	while not idxs.is_empty() and minq[idxs.size() - 1] > value:
+		idxs.pop_back()
 		minq.pop_back()
-	minq.push_back(value)
-	while not maxq.is_empty() and maxq[maxq.size() - 1] < value:
+	idxs.append(idxs.size())
+	minq.append(value)
+
+	while not idxe.is_empty() and (idxe[0] <= oldest or idxe[0] >= newest):
+		idxe.pop_front()
+		maxq.pop_front()
+	while not idxe.is_empty() and maxq[idxe.size() - 1] < value:
+		idxe.pop_back()
 		maxq.pop_back()
-	maxq.push_back(value)
+	idxe.append(idxe.size())
+	maxq.append(value)
 
 	if minq.is_empty() or maxq.is_empty():
 		return 0.0
@@ -432,6 +439,14 @@ func _adaptive_norm(value: float, hist: PackedFloat32Array, minq: Array, maxq: A
 	if rng < 3.0:
 		return 0.0
 	return clampf((value - mn) / rng, 0.0, 1.0)
+
+
+func _set_shader_param_cached(pname: String, value: float) -> void:
+	var rounded: float = roundf(value * 1000.0) / 1000.0
+	if _shader_cache.get(pname) == rounded:
+		return
+	_shader_cache[pname] = rounded
+	_crt_material.set_shader_parameter(pname, rounded)
 
 
 func _env(current: float, target: float, delta: float, rate: float) -> float:
@@ -637,6 +652,9 @@ func _toggle_pause() -> void:
 
 
 func _on_debug_start_combo(c: int) -> void:
+	# Debug-функция доступна только в отладочных сборках (см. KEY_F3 в _unhandled_input).
+	if not OS.is_debug_build():
+		return
 	SFX.key()
 	if debug_menu:
 		debug_menu.visible = false
@@ -706,7 +724,8 @@ func _start_game_from_menu() -> void:
 		_current_screen.queue_free()
 		_current_screen = null
 	_set_game_visible(true)
-	start_game()
+	# Явно с нуля: иначе «START» из меню унаследует debug_start_combo после F3.
+	start_game(0)
 
 
 func _show_config_menu() -> void:
@@ -774,7 +793,7 @@ func _on_lose_restart() -> void:
 		_current_screen.queue_free()
 		_current_screen = null
 	_set_game_visible(true)
-	start_game()
+	start_game(0)
 
 func _abort_game() -> void:
 	if not active:
@@ -791,8 +810,10 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_F3:
-			SFX.key()
-			_toggle_debug_menu()
+			# Debug-меню — только в отладочных сборках.
+			if OS.is_debug_build():
+				SFX.key()
+				_toggle_debug_menu()
 			return
 		if event.keycode == KEY_F4:
 			SFX.key()
@@ -805,12 +826,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		if debug_menu and debug_menu.visible:
 			return
 
-	if not active:
-		if event is InputEventKey and event.pressed and not event.echo:
-			if event.keycode == KEY_SPACE or event.keycode == KEY_ENTER:
-				SFX.key()
-				start_game()
-		return
+	# Здесь всегда active == true: end_game() мгновенно переводит current_state
+	# в CUTSCENE, а рестарт обрабатывает сам cutscene — мёртвая ветка убрана.
 
 	if _event_matches(event, binding_answer1):
 		handle_answer(1)
@@ -841,8 +858,12 @@ func _default_key_binding(keycode: int) -> InputEventKey:
 
 
 func _read_binding(cfg: ConfigFile, key: String, fallback: InputEvent) -> InputEvent:
-	var t: String = cfg.get_value("input", key + "_type", "key")
-	var v: int = cfg.get_value("input", key + "_value", 0)
+	# Если секции input в конфиге нет, берём значение из fallback,
+	# иначе keycode/button_index станет 0 и биндинг сломается.
+	var t: String = cfg.get_value("input", key + "_type", "")
+	var v: Variant = cfg.get_value("input", key + "_value", null)
+	if v == null:
+		return fallback
 	if t == "mouse":
 		var mb := InputEventMouseButton.new()
 		mb.button_index = v
@@ -1274,25 +1295,10 @@ func show_next_item() -> void:
 		errors_in_stage = 0
 		_update_music_for_mode()
 		# Бонус времени за переход на новый этап (один раз на этап).
-		var bonus_threshold := 0
-		match new_mode:
-			"shapes": bonus_threshold = 100
-			"stroop": bonus_threshold = 200
-			"master": bonus_threshold = 300
-		if bonus_threshold > 0 and combo >= bonus_threshold:
-			match bonus_threshold:
-				100:
-					if not added100:
-						added100 = true
-						timer_value += STAGE_TIME_BONUS
-				200:
-					if not added200:
-						added200 = true
-						timer_value += STAGE_TIME_BONUS
-				300:
-					if not added300:
-						added300 = true
-						timer_value += STAGE_TIME_BONUS
+		var threshold: int = STAGE_BONUSES.get(new_mode, 0)
+		if threshold > 0 and combo >= threshold and not _stage_bonus_given.has(threshold):
+			_stage_bonus_given[threshold] = true
+			timer_value += STAGE_TIME_BONUS
 			update_timer_display()
 
 	var item := generate_item()
@@ -1465,9 +1471,10 @@ func start_game(initial_combo: int = -1) -> void:
 	current_item = {}
 	waiting_for_garbage = false
 	errors_in_stage = 0
-	added100 = initial_combo >= 100
-	added200 = initial_combo >= 200
-	added300 = initial_combo >= 300
+	_stage_bonus_given = {}
+	for t in STAGE_BONUSES.values():
+		if initial_combo >= t:
+			_stage_bonus_given[t] = true
 	mode = get_main_mode(combo)
 	_update_music_for_mode()
 

@@ -9,6 +9,7 @@ var progress_pct: int = 0
 
 var _handled: bool = false
 var _input_enabled: bool = false
+var _input_delay_timer: SceneTreeTimer = null
 
 func _ready() -> void:
 	super._ready()
@@ -19,8 +20,11 @@ func _ready() -> void:
 func _start_input_delay() -> void:
 	# Задержка 1 сек: игрок не должен случайно зарестартить
 	# в запале после смерти.
-	await get_tree().create_timer(1.0).timeout
-	if not _handled:
+	_input_delay_timer = get_tree().create_timer(1.0)
+	await _input_delay_timer.timeout
+	# Если экран уже закрыли (handled), НЕ включаем ввод: иначе этот
+	# «висячий» await через секунду повторно эмитировал бы restart/menu.
+	if not _handled and is_inside_tree():
 		_input_enabled = true
 
 
