@@ -22,6 +22,14 @@ var _shutdown: AudioStream
 var _last_kbd: int = -1
 var _last_err: int = -1
 
+# «Аутентичный стиль»: низкий гул блока питания + ступенчатый дисплейный бип.
+# Оба просятся процедурно (AudioStreamWAV в памяти) — не тащим бинарные
+# ассеты в репозиторий и не зависим от импортёра.
+const HUM_DB := -30.0
+const BEEP_DB := -16.0
+var _hum_player: AudioStreamPlayer
+var _beep_player: AudioStreamPlayer
+
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
@@ -37,6 +45,64 @@ func _ready() -> void:
 	_corrupted = _load_one(CORRUPTED_FILE)
 	_booting = _load_one(BOOTING_FILE)
 	_shutdown = _load_one(SHUTDOWN_FILE)
+
+	_hum_player = AudioStreamPlayer.new()
+	_hum_player.bus = "Master"
+	_hum_player.volume_db = HUM_DB
+	_hum_player.stream = _synth_hum()
+	_hum_player.autoplay = true
+	add_child(_hum_player)
+
+	_beep_player = AudioStreamPlayer.new()
+	_beep_player.bus = "Master"
+	_beep_player.volume_db = BEEP_DB
+	_beep_player.stream = _synth_beep()
+	add_child(_beep_player)
+
+
+# 50/100 Гц сетевой фон + свист ВЧ-трансформатора + шипение коронного разряда.
+# Шум детерминирован по индексу сэмпла — цикл замыкается без щелчка.
+func _synth_hum() -> AudioStreamWAV:
+	var sr := 22050
+	var n := sr * 2  # ровно 2 секунды = целое число периодов 50/100 Гц
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	for i in n:
+		var t := float(i) / sr
+		var v: float = sin(TAU * 50.0 * t) * 0.22 \
+			+ sin(TAU * 100.0 * t) * 0.10 \
+			+ sin(TAU * 7800.0 * t) * 0.02
+		var h: float = float((i * 1103515245 + 12345) & 0x7FFFFFFF) / 2147483647.0
+		v += (h - 0.5) * 0.05
+		data.encode_s16(i * 2, int(clampf(v, -1.0, 1.0) * 28000.0))
+	var wav := AudioStreamWAV.new()
+	wav.format = AudioStreamWAV.FORMAT_16_BITS
+	wav.mix_rate = sr
+	wav.stereo = false
+	wav.data = data
+	wav.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	wav.loop_begin = 0
+	wav.loop_end = n
+	return wav
+
+
+# Короткий меандр 740 Гц с огибающей — «печатающийся» символ.
+func _synth_beep() -> AudioStreamWAV:
+	var sr := 22050
+	var n := int(sr * 0.045)
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	for i in n:
+		var t := float(i) / sr
+		var sq: float = 1.0 if fmod(t * 740.0, 1.0) < 0.5 else -1.0
+		var env: float = 1.0 - float(i) / float(n)
+		data.encode_s16(i * 2, int(clampf(sq * 0.4 * env, -1.0, 1.0) * 28000.0))
+	var wav := AudioStreamWAV.new()
+	wav.format = AudioStreamWAV.FORMAT_16_BITS
+	wav.mix_rate = sr
+	wav.stereo = false
+	wav.data = data
+	return wav
 
 
 func _load_group(files: Array) -> Array[AudioStream]:
@@ -94,10 +160,21 @@ func set_volume(linear: float) -> void:
 		db = VOLUME_DB + linear_to_db(v)
 	for p in _pool:
 		p.volume_db = db
+	# Гул и бип живут в своей громкости, но молчат вместе со всеми.
+	if _hum_player:
+		_hum_player.volume_db = -80.0 if v <= 0.001 else HUM_DB + linear_to_db(v)
+	if _beep_player:
+		_beep_player.volume_db = -80.0 if v <= 0.001 else BEEP_DB + linear_to_db(v)
 
 # --- Public API ---
 func key() -> void:
 	_play_random(_kbd_streams, "kbd")
+
+
+# Бип появления символа на квадранте (аутентичный стиль).
+func beep() -> void:
+	if _beep_player:
+		_beep_player.play()
 
 
 func error() -> void:

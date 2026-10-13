@@ -11,6 +11,10 @@ const HISTORY_LEN := 60
 
 # Beat-punch (0..1) — main.gd пульсирует им активный квадрант.
 var pulse: float = 0.0
+# Огибающие полос спектра (0..1) — публичны для VU-метра HUD'а.
+var bass: float = 0.0
+var mid: float = 0.0
+var treble: float = 0.0
 
 var _spectrum: AudioEffectSpectrumAnalyzerInstance
 
@@ -91,6 +95,11 @@ func update(delta: float, material: ShaderMaterial) -> bool:
 	var mid_trans: float    = clampf((_mid_fast - _mid_slow) * 4.0,      0.0, 1.0)
 	var treble_trans: float = clampf((_treble_fast - _treble_slow) * 4.0, 0.0, 1.0)
 
+	# Публичные копии — для VU-метра в HUD (main.gd читает, не трогая приваты).
+	bass = bass_trans
+	mid = mid_trans
+	treble = treble_trans
+
 	var drive: float = maxf(bass_trans, treble_trans * 0.9)
 	drive = maxf(drive, mid_trans * 0.7)
 	if drive > pulse:
@@ -114,6 +123,9 @@ func reset_params(material: ShaderMaterial) -> void:
 	for pname in ["music_bass", "music_mid", "music_treble", "music_pulse"]:
 		_shader_cache.erase(pname)
 		material.set_shader_parameter(pname, 0.0)
+	bass = 0.0
+	mid = 0.0
+	treble = 0.0
 
 
 func _to_db(magnitude: float) -> float:
