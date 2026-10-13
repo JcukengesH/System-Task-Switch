@@ -279,6 +279,8 @@ func _build_meta_hud() -> void:
 func _update_bytes_display() -> void:
 	if bytes_label:
 		bytes_label.text = "BYTES: %d" % (_meta.balance() + _run_bytes)
+		if _debug_run:
+			bytes_label.text += "   [F3-DEBUG: БЕЗ ПРОГРЕССА]"
 
 
 func _update_progress_display() -> void:
@@ -478,7 +480,7 @@ func _build_debug_menu() -> void:
 	vbox.add_child(title)
 
 	var sub := Label.new()
-	sub.text = "(restart)"
+	sub.text = "обходит гейт этапов · байты/очки не начисляются"
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub.add_theme_font_size_override("font_size", 11)
 	sub.modulate = Color(1, 1, 1, 0.6)
@@ -1084,9 +1086,12 @@ func handle_answer(button: int) -> void:
 		if combo > max_combo:
 			max_combo = combo
 		# Экономика забега: байты по курсу этапа (The Sequence — 0) и
-		# «очки за всё время» в статистику этого этапа.
-		var rate: int = int(Meta.BYTE_RATES.get(mode, 0))
-		_meta.record_answer(mode)
+		# «очки за всё время» в статистику этого этапа. F3-забег — вне
+		# прогрессии: ни байтов, ни очков, чтобы обход гейта этапов
+		# нельзя было перепутать с честным забегом.
+		var rate: int = 0 if _debug_run else int(Meta.BYTE_RATES.get(mode, 0))
+		if not _debug_run:
+			_meta.record_answer(mode)
 		if rate > 0:
 			_run_bytes += rate
 		update_combo_display()
@@ -1173,8 +1178,11 @@ func start_game(initial_combo: int = -1, debug: bool = false) -> void:
 	_run_bytes = 0
 	if initial_combo < 0:
 		initial_combo = debug_start_combo
-	else:
-		debug_start_combo = maxi(initial_combo, 0)
+	debug_start_combo = maxi(initial_combo, 0)
+	# Вне F3 забег не может начаться с некупленного этапа: страховка на
+	# случай, если высокий комбо придёт из skip/F3-наследия/внешнего вызова.
+	if not debug and not _meta.stage_owned(TaskGen.get_main_mode(initial_combo)):
+		initial_combo = 0
 
 	countdown_timer.stop()
 	garbage_timer.stop()
