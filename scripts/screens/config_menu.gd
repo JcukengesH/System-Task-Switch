@@ -102,12 +102,21 @@ func _format_event(e: InputEvent) -> String:
 
 func _update_selection() -> void:
 	for i in _item_labels.size():
+		var lbl: Label = _item_labels[i]
+		if not is_instance_valid(lbl):
+			continue
 		var opt: Dictionary = _options[i]
-		var prefix := "  >> " if i == _selected else "     "
+		var sel: bool = i == _selected
+		var cursor := "█" if (sel and _cursor_on) else " "
 		var mark := "  [x]" if opt["active"] else ""
-		_item_labels[i].text = prefix + opt["label"] + opt["suffix"] + mark
-		_item_labels[i].add_theme_color_override("font_color",
-			Color.WHITE if i == _selected else Color(0.7, 0.7, 0.7))
+		lbl.text = "  " + opt["label"] + opt["suffix"] + mark + cursor
+		set_inverted(lbl, sel)
+
+
+func _on_cursor_blink() -> void:
+	super._on_cursor_blink()
+	if not _locked:
+		_update_selection()
 
 
 func _input(event: InputEvent) -> void:

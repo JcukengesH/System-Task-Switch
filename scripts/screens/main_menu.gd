@@ -36,10 +36,21 @@ func _show_menu() -> void:
 
 func _update_selection() -> void:
 	for i in _item_labels.size():
-		var prefix := "  >> " if i == _selected else "     "
-		_item_labels[i].text = prefix + ITEMS[i]
-		_item_labels[i].add_theme_color_override("font_color",
-			Color.WHITE if i == _selected else Color(0.7, 0.7, 0.7))
+		var lbl: Label = _item_labels[i]
+		if not is_instance_valid(lbl):
+			continue
+		var sel: bool = i == _selected
+		var cursor := "█" if (sel and _cursor_on) else " "
+		lbl.text = "  " + ITEMS[i] + cursor
+		set_inverted(lbl, sel)
+
+
+# Мигание курсора перерисовывает только текущую выделенную строку.
+func _on_cursor_blink() -> void:
+	super._on_cursor_blink()
+	if _locked:
+		return
+	_update_selection()
 
 
 func _input(event: InputEvent) -> void:

@@ -135,10 +135,19 @@ func _build_menu() -> void:
 
 func _update_selection() -> void:
 	for i in _item_labels.size():
-		var prefix: String = ("  >> [%d] " % (i + 1)) if i == _selected else ("     [%d] " % (i + 1))
-		_item_labels[i].text = prefix + ITEMS[i]
-		_item_labels[i].add_theme_color_override("font_color",
-			Color.WHITE if i == _selected else Color(0.7, 0.7, 0.7))
+		var lbl: Label = _item_labels[i]
+		if not is_instance_valid(lbl):
+			continue
+		var sel: bool = i == _selected
+		var cursor := "█" if (sel and _cursor_on) else " "
+		lbl.text = ("     [%d] " % (i + 1)) + ITEMS[i] + cursor
+		set_inverted(lbl, sel)
+
+
+func _on_cursor_blink() -> void:
+	super._on_cursor_blink()
+	if _menu_ready:
+		_update_selection()
 
 
 func _move(delta: int) -> void:
