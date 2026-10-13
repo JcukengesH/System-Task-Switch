@@ -46,6 +46,9 @@ const EFFECT_COMBO_CAP := 300.0
 const EFFECT_RISE_SPEED := 1.5
 const EFFECT_FALL_SPEED := 1.2
 const ANSWER_FEEDBACK_DELAY := 0.10
+# Окно молчания после старта забега: клик-рестарт (или его второй такт
+# двойного клика) не должен превращаться в ответ на первом символе.
+const START_INPUT_GRACE := 0.35
 const EFFECT_MASTER_MAX := 1.5
 
 const SETTINGS_PATH := "user://terminal_settings.cfg"
@@ -1919,7 +1922,11 @@ func start_game(initial_combo: int = -1, debug: bool = false) -> void:
 	paused = false
 	if pause_indicator:
 		pause_indicator.visible = false
-	_answer_locked = false
+	# Окно молчания на старт: клик, которым рестартнули игру (он же кнопка
+	# ответа), и второй такт двойного клика не должны стать ответом.
+	_answer_locked = true
+	var grace := get_tree().create_timer(START_INPUT_GRACE)
+	grace.timeout.connect(func() -> void: _answer_locked = false)
 
 	active = true
 	timer_value = float(START_TIME)

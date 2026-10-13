@@ -80,6 +80,8 @@ func _input(event: InputEvent) -> void:
 			return
 		SFX.key()
 		_handled = true
+		# Не даём тому же press долететь до игры после мгновенного рестарта.
+		get_viewport().set_input_as_handled()
 		if event.keycode == KEY_ESCAPE:
 			_exit_to_menu()
 		else:
@@ -92,6 +94,7 @@ func _input(event: InputEvent) -> void:
 			MOUSE_BUTTON_XBUTTON1, MOUSE_BUTTON_XBUTTON2:
 				SFX.key()
 				_handled = true
+				get_viewport().set_input_as_handled()
 				restart_requested.emit()
 
 
