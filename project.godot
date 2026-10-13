@@ -31,6 +31,10 @@ SFX="*uid://d0sctn2fbp8b"
 
 window/size/mode=2
 
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/godot_mcp/plugin.cfg")
+
 [rendering]
 
 environment/defaults/default_clear_color=Color(0, 0, 0, 1)

@@ -59,6 +59,44 @@ const MOD_THRESHOLDS := {
 	"stroop": {"inverse": 220, "flip": 240, "shuffle": 260, "garbage": 280},
 }
 
+# ---------- Подсказки игроку (попапы в стиле терминала) ----------
+# Имена модификаторов для заголовка попапа.
+const MOD_NAMES := {
+	"randomQuadrant": "СЛУЧАЙНЫЙ УГОЛ",
+	"flip": "ПЕРЕВОРОТ СИМВОЛА",
+	"inverse": "ИНВЕРСИЯ ОТВЕТА",
+	"garbage": "СБОЙ СИСТЕМЫ",
+	"missingEdge": "ПРОПУЩЕННАЯ ГРАНЬ",
+	"mathExpression": "МАТЕМАТИЧЕСКИЙ ПРИМЕР",
+	"twoShapes": "ДВЕ ФИГУРЫ",
+	"shuffle": "ПЕРЕМЕШАННЫЕ БУКВЫ",
+}
+
+# Краткая инструкция «как действовать» при включении модификатора.
+const MOD_HINTS := {
+	"letters": {
+		"randomQuadrant": "ЗАДАНИЕ ТЕПЕРЬ ПОЯВЛЯЕТСЯ\nВ СЛУЧАЙНОМ УГЛУ. ПРАВИЛА ТЕ ЖЕ",
+		"flip": "СИМВОЛ МОЖЕТ БЫТЬ ПЕРЕВЁРНУТ\nНА ОТВЕТ ЭТО НЕ ВЛИЯЕТ",
+		"inverse": "ЖИРНЫЙ СИМВОЛ = ОТВЕТ НАОБОРОТ\n[1] <-> [2]",
+		"garbage": "НА ЭКРАНЕ @ # $ % ?\nНЕ ЖМИ НИЧЕГО — ПОДОЖДИ СЕКУНДУ",
+	},
+	"shapes": {
+		"missingEdge": "У ФИГУРЫ МОЖЕТ НЕ ХВАТАТЬ ГРАНИ\nСЧИТАЙ ВИДИМЫЕ",
+		"mathExpression": "ВМЕСТО ЦИФРЫ — ПРИМЕР (5+3)\nСНАЧАЛА ПОСЧИТАЙ ЕГО",
+		"twoShapes": "ДВЕ ФИГУРЫ РЯДОМ\nСЧИТАЙ СУММУ ИХ ГРАНЕЙ",
+		"garbage": "НА ЭКРАНЕ @ # $ % ?\nНЕ ЖМИ НИЧЕГО — ПОДОЖДИ СЕКУНДУ",
+	},
+	"stroop": {
+		"inverse": "ЖИРНОЕ СЛОВО = ОТВЕТ НАОБОРОТ\n[1] <-> [2]",
+		"flip": "СЛОВО МОЖЕТ БЫТЬ ПЕРЕВЁРНУТО\nНА ОТВЕТ ЭТО НЕ ВЛИЯЕТ",
+		"shuffle": "БУКВЫ В СЛОВАХ ПЕРЕМЕШАНЫ (ЙСИНI)\nСРАВНИВАЙ ЦВЕТ С НАЗВАНИЕМ КАК ЕСТЬ",
+		"garbage": "НА ЭКРАНЕ @ # $ % ?\nНЕ ЖМИ НИЧЕГО — ПОДОЖДИ СЕКУНДУ",
+	},
+}
+
+const POPUP_MODE_PRESSURES := 3   # попап правил висит до 3-х нажатий
+const POPUP_HINT_SECONDS := 5.0   # попап модификатора висит 5 секунд
+
 @onready var quadrants: Array = [
 	$Margin/VBox/Grid/Quadrant0,
 	$Margin/VBox/Grid/Quadrant1,
@@ -93,6 +131,16 @@ var debug_menu: PanelContainer
 var pause_indicator: Label
 var error_overlay: Label
 var _error_tween: Tween
+
+# Попап-подсказка (правила этапа / включение модификатора).
+var answer_popup: PanelContainer
+var _popup_title: Label
+var _popup_rule: Label
+var _popup_keys: Label
+var _popup_fade_tween: Tween
+var _popup_presses: int = 0     # >0: попап висит до N нажатий ответа
+var _popup_time: float = 0.0    # >0: попап висит N секунд
+var _hinted_mods: Dictionary = {}  # уже показанные модификаторы за партию
 
 var _terminal_font: Font = null
 var _terminal_font_bold: Font = null
@@ -173,6 +221,7 @@ func _ready() -> void:
 	_build_debug_menu()
 	_build_pause_indicator()
 	_build_error_overlay()
+	_build_answer_popup()
 	_set_game_input_transparent()
 	_margin = get_node_or_null("Margin")
 	_apply_audio_settings()
@@ -342,6 +391,12 @@ func _update_music_for_mode() -> void:
 func _process(delta: float) -> void:
 	_update_effect_scale(delta)
 
+	# Таймер подсказки-модификатора (на паузе не тратится).
+	if _popup_time > 0.0 and not paused:
+		_popup_time -= delta
+		if _popup_time <= 0.0:
+			_popup_hide()
+
 	if not music_fx_enabled:
 		return
 	if _spectrum == null or _crt_material == null:
@@ -401,34 +456,38 @@ func _to_db(magnitude: float) -> float:
 
 func _adaptive_norm(value: float, hist: PackedFloat32Array, state: Dictionary) -> float:
 	# Скользящее окно min/max: кольцевой буфер фикс. размера + монотонные деки
-	# (пары [индекс_кольца, значение]). Амортизированно O(1) на кадр.
-	# Было: O(HISTORY_LEN) на поиск min/max + remove_at(0) (сдвиг массива).
+	# (пары [логический индекс, значение]). Амортизированно O(1) на кадр.
+	# ВАЖНО: в деках хранится монотонный счётчик _hist_idx, а НЕ слот кольца.
+	# Слот перезаиспользуется каждые HISTORY_LEN тактов, и вытеснение по нему
+	# ломало окно min/max сразу после первого переполнения буфера.
 	var idxs: Array = state["min_idx"]
 	var minq: Array = state["min_val"]
 	var idxe: Array = state["max_idx"]
 	var maxq: Array = state["max_val"]
 
-	var oldest: int = _hist_idx - HISTORY_LEN
-	var newest: int = _hist_idx  # слот, который будет перезаписан
-	hist[_hist_idx & (HISTORY_LEN - 1)] = value
+	var t: int = _hist_idx  # логический индекс нового отсчёта
 	_hist_idx += 1
+	hist[t & (HISTORY_LEN - 1)] = value
 
-	while not idxs.is_empty() and (idxs[0] <= oldest or idxs[0] >= newest):
+	# Всё с индексом <= expired уже за левой границей окна [t-HISTORY_LEN+1; t].
+	var expired: int = t - HISTORY_LEN
+
+	while not idxs.is_empty() and int(idxs[0]) <= expired:
 		idxs.pop_front()
 		minq.pop_front()
-	while not idxs.is_empty() and minq[idxs.size() - 1] > value:
+	while not idxs.is_empty() and float(minq[minq.size() - 1]) > value:
 		idxs.pop_back()
 		minq.pop_back()
-	idxs.append(idxs.size())
+	idxs.append(t)
 	minq.append(value)
 
-	while not idxe.is_empty() and (idxe[0] <= oldest or idxe[0] >= newest):
+	while not idxe.is_empty() and int(idxe[0]) <= expired:
 		idxe.pop_front()
 		maxq.pop_front()
-	while not idxe.is_empty() and maxq[idxe.size() - 1] < value:
+	while not idxe.is_empty() and float(maxq[maxq.size() - 1]) < value:
 		idxe.pop_back()
 		maxq.pop_back()
-	idxe.append(idxe.size())
+	idxe.append(t)
 	maxq.append(value)
 
 	if minq.is_empty() or maxq.is_empty():
@@ -538,6 +597,142 @@ func _register_error_and_flash() -> bool:
 		return true
 	flash_error_number(MAX_ERRORS_PER_STAGE - errors_in_stage)
 	return false
+
+
+# ---------- Попапы-подсказки (стиль «терминальное окно») ----------
+# Появляются по центру, не перекрывают символы в квадрантах и не принимают
+# ввод: mouse_filter = IGNORE у всех узлов. Правила этапа висят до нескольких
+# нажатий ответа, подсказка модификатора — несколько секунд.
+func _build_answer_popup() -> void:
+	answer_popup = PanelContainer.new()
+	answer_popup.name = "AnswerPopup"
+	answer_popup.visible = false
+	answer_popup.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	answer_popup.set_anchors_preset(Control.PRESET_CENTER)
+	answer_popup.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	answer_popup.grow_vertical = Control.GROW_DIRECTION_BOTH
+
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0, 0, 0, 0.88)
+	style.border_color = Color(1, 1, 1, 0.9)
+	style.set_border_width_all(2)
+	style.content_margin_left = 18
+	style.content_margin_right = 18
+	style.content_margin_top = 10
+	style.content_margin_bottom = 10
+	answer_popup.add_theme_stylebox_override("panel", style)
+
+	var vbox := VBoxContainer.new()
+	vbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vbox.add_theme_constant_override("separation", 4)
+	answer_popup.add_child(vbox)
+
+	_popup_title = Label.new()
+	_popup_title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_popup_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_popup_title.add_theme_font_size_override("font_size", 18)
+	_popup_title.add_theme_color_override("font_color", Color(1, 0.85, 0.2))
+	vbox.add_child(_popup_title)
+
+	_popup_rule = Label.new()
+	_popup_rule.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_popup_rule.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_popup_rule.add_theme_font_size_override("font_size", 15)
+	_popup_rule.add_theme_color_override("font_color", Color.WHITE)
+	vbox.add_child(_popup_rule)
+
+	_popup_keys = Label.new()
+	_popup_keys.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_popup_keys.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_popup_keys.add_theme_font_size_override("font_size", 13)
+	_popup_keys.add_theme_color_override("font_color", Color(0.45, 1, 0.45))
+	vbox.add_child(_popup_keys)
+
+	answer_popup.modulate = Color(1, 1, 1, 0)
+	add_child(answer_popup)
+
+
+func _popup_show(title: String, rule: String, show_keys: bool, presses: int, seconds: float) -> void:
+	if answer_popup == null or not is_instance_valid(answer_popup):
+		return
+	_popup_title.text = title
+	_popup_rule.text = rule
+	_popup_keys.visible = show_keys
+	if show_keys:
+		_popup_keys.text = "ОТВЕТ: [1] → %s   [2] → %s" % [
+			_format_binding(binding_answer1), _format_binding(binding_answer2)
+		]
+	_popup_presses = presses
+	_popup_time = seconds
+	answer_popup.visible = true
+	answer_popup.modulate = Color(1, 1, 1, 0)
+	if _popup_fade_tween and _popup_fade_tween.is_valid():
+		_popup_fade_tween.kill()
+	_popup_fade_tween = create_tween()
+	_popup_fade_tween.tween_property(answer_popup, "modulate:a", 1.0, 0.12)
+
+
+func _popup_hide() -> void:
+	_popup_presses = 0
+	_popup_time = 0.0
+	if answer_popup == null or not is_instance_valid(answer_popup) or not answer_popup.visible:
+		return
+	if _popup_fade_tween and _popup_fade_tween.is_valid():
+		_popup_fade_tween.kill()
+	_popup_fade_tween = create_tween()
+	_popup_fade_tween.tween_property(answer_popup, "modulate:a", 0.0, 0.25)
+	_popup_fade_tween.tween_callback(func() -> void: answer_popup.visible = false)
+
+
+func _show_mode_popup(m: String) -> void:
+	var idx := clampi(get_stage_index(m), 1, TerminalScreen.STAGE_NAMES.size())
+	_popup_show("ЭТАП %d — %s" % [idx, TerminalScreen.STAGE_NAMES[idx - 1]],
+		_mode_rule_text(m), true, POPUP_MODE_PRESSURES, 0.0)
+
+
+func _mode_rule_text(m: String) -> String:
+	match m:
+		"letters":
+			return "ВВЕРХУ:  [2] ГЛАСНАЯ · [1] СГЛАСНАЯ\nВНИЗУ:   [2] ЧЁТНАЯ · [1] НЕЧЁТНАЯ"
+		"shapes":
+			return "СРАВНИ ЧИСЛО ГРАНЕЙ С ЦИФРОЙ\n[2] = РАВНО · [1] = НЕ РАВНО"
+		"stroop":
+			return "СРАВНИ ЦВЕТ ТЕКСТА С ЕГО НАЗВАНИЕМ\n[2] = СОВПАДАЕТ · [1] = НЕТ"
+	return "ВСЕ ТИПЫ ЗАДАНИЙ ВПЕРЕМЕШКУ\nЛЮБАЯ ОШИБКА — КОНЕЦ ИГРЫ"
+
+
+func _maybe_show_mod_hint(submode: String) -> void:
+	var thresholds: Dictionary = MOD_THRESHOLDS.get(submode, {})
+	var hints: Dictionary = MOD_HINTS.get(submode, {})
+	for key in thresholds:
+		var tag := str(submode) + "/" + str(key)
+		if _hinted_mods.has(tag):
+			continue
+		if combo >= int(thresholds[key]):
+			_hinted_mods[tag] = true
+			_popup_show("МОДИФИКАТОР: " + str(MOD_NAMES.get(key, key)),
+				str(hints.get(key, "")), false, 0, POPUP_HINT_SECONDS)
+			return
+
+
+func _format_binding(e: InputEvent) -> String:
+	if e is InputEventKey:
+		var s := OS.get_keycode_string(e.keycode)
+		return s if s != "" else "?"
+	if e is InputEventMouseButton:
+		match e.button_index:
+			MOUSE_BUTTON_LEFT:
+				return "ЛКМ"
+			MOUSE_BUTTON_RIGHT:
+				return "ПКМ"
+			MOUSE_BUTTON_MIDDLE:
+				return "СКМ"
+			MOUSE_BUTTON_XBUTTON1:
+				return "М4"
+			MOUSE_BUTTON_XBUTTON2:
+				return "М5"
+		return "М" + str(e.button_index)
+	return "?"
 
 
 func _style_button(btn: Button) -> void:
@@ -672,6 +867,8 @@ func _set_game_visible(v: bool) -> void:
 		combo_bar.visible = v
 	if error_overlay:
 		error_overlay.visible = false
+	if not v:
+		_popup_hide()
 
 
 func _transition_to(screen: TerminalScreen) -> void:
@@ -1294,6 +1491,7 @@ func show_next_item() -> void:
 		mode = new_mode
 		errors_in_stage = 0
 		_update_music_for_mode()
+		_show_mode_popup(new_mode)
 		# Бонус времени за переход на новый этап (один раз на этап).
 		var threshold: int = STAGE_BONUSES.get(new_mode, 0)
 		if threshold > 0 and combo >= threshold and not _stage_bonus_given.has(threshold):
@@ -1317,6 +1515,7 @@ func show_next_item() -> void:
 		order_index = (order_index + 1) % QUADRANT_ORDER.size()
 
 	display_item(item, quad_index)
+	_maybe_show_mod_hint(str(item.get("submode", mode)))
 
 
 # ---------- Обновление верхних полосок ----------
@@ -1348,6 +1547,12 @@ func handle_answer(button: int) -> void:
 		return
 	if _answer_locked:
 		return
+
+	# Любое нажатие ответа «считывается» подсказкой этапа.
+	if _popup_presses > 0:
+		_popup_presses -= 1
+		if _popup_presses <= 0:
+			_popup_hide()
 
 	if waiting_for_garbage:
 		garbage_timer.stop()
@@ -1431,6 +1636,7 @@ func end_game(reason: String) -> void:
 	active = false
 	countdown_timer.stop()
 	garbage_timer.stop()
+	_popup_hide()
 	waiting_for_garbage = false
 	for q in quadrants:
 		q.clear_item()
@@ -1477,6 +1683,16 @@ func start_game(initial_combo: int = -1) -> void:
 			_stage_bonus_given[t] = true
 	mode = get_main_mode(combo)
 	_update_music_for_mode()
+
+	# Подсказки: при старте с высоким комбо (F3) пропущенные модификаторы
+	# не показываем, зато сразу даём попап правил текущего этапа.
+	_hinted_mods = {}
+	for submode in MOD_THRESHOLDS:
+		for key in MOD_THRESHOLDS[submode]:
+			if initial_combo >= int(MOD_THRESHOLDS[submode][key]):
+				_hinted_mods[str(submode) + "/" + str(key)] = true
+	_popup_hide()
+	_show_mode_popup(mode)
 
 	update_timer_display()
 	update_combo_display()

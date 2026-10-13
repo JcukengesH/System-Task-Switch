@@ -252,8 +252,8 @@ func _select_option() -> void:
 		emit_settings()
 		_rebuild()
 		return
-	if v == "sfx_volume":
-		# Нажатие ENTER на строке SFX VOLUME ничего не делает,
+	if v == "volume" or v == "sfx_volume":
+		# Нажатие ENTER на строках громкости ничего не делает,
 		# регулировка — только через ←/→ или клик. Игнорируем.
 		return
 
