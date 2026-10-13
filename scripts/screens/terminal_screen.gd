@@ -1,12 +1,8 @@
 class_name TerminalScreen
 extends Control
 
-const STAGE_NAMES := [
-	"HEX-CYPHER",
-	"POLYMETRY",
-	"STROOPTEST",
-	"THE SEQUENCE",
-]
+# Названия этапов — единый источник правды в Meta (см. meta.gd).
+const STAGE_NAMES := Meta.STAGE_LABELS
 var _vbox: VBoxContainer
 var _font: Font
 

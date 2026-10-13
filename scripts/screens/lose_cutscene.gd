@@ -14,7 +14,6 @@ const ITEMS := ["RESTART PROTOCOL", "OPEN SYSTEM UPDATE", "RETURN TO MAIN MENU"]
 
 var _handled: bool = false
 var _input_enabled: bool = false
-var _input_delay_timer: SceneTreeTimer = null
 var _item_labels: Array = []
 var _selected: int = 0
 var _menu_ready: bool = false
@@ -28,8 +27,7 @@ func _ready() -> void:
 func _start_input_delay() -> void:
 	# Задержка 1 сек: игрок не должен случайно зарестартить
 	# в запале после смерти.
-	_input_delay_timer = get_tree().create_timer(1.0)
-	await _input_delay_timer.timeout
+	await get_tree().create_timer(1.0).timeout
 	# Если экран уже закрыли (handled), НЕ включаем ввод: иначе этот
 	# «висячий» await через секунду повторно эмитировал бы restart/menu.
 	if not _handled and is_inside_tree():

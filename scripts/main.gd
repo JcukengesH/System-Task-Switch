@@ -178,11 +178,8 @@ var _current_music_key: String = ""
 # Аудио-спектр для шейдера.
 var _spectrum: AudioEffectSpectrumAnalyzerInstance
 var _crt_material: ShaderMaterial
-# История спектра: кольцевой буфер фикс. размера + монотонные деки min/max
-# (деки хранят «логические» инкрементальные индексы, поэтому маскирование не нужно).
-var _bass_hist: PackedFloat32Array
-var _mid_hist: PackedFloat32Array
-var _treble_hist: PackedFloat32Array
+# История спектра: монотонные деки min/max по скользящему окну HISTORY_LEN
+# (деки хранят «логические» инкрементальные индексы, кольцевой буфер не нужен).
 var _bass_state: Dictionary = {}
 var _mid_state: Dictionary = {}
 var _treble_state: Dictionary = {}
@@ -217,13 +214,8 @@ func _ready() -> void:
 	_load_settings()
 	_apply_terminal_theme()
 
-	# Инициализация истории спектра: кольцевые буферы, заполненные нулями.
-	var h := PackedFloat32Array()
-	h.resize(HISTORY_LEN)
-	h.fill(0.0)
-	_bass_hist = h.duplicate()
-	_mid_hist = h.duplicate()
-	_treble_hist = h.duplicate()
+	# Инициализация истории спектра: только деки min/max (кольцевых буферов
+	# больше нет — значения живут в самих деках).
 	_bass_state = {"min_idx": [], "min_val": [], "max_idx": [], "max_val": []}
 	_mid_state = {"min_idx": [], "min_val": [], "max_idx": [], "max_val": []}
 	_treble_state = {"min_idx": [], "min_val": [], "max_idx": [], "max_val": []}
@@ -425,9 +417,9 @@ func _process(delta: float) -> void:
 	var mid_db: float    = _to_db(mid_raw)
 	var treble_db: float = _to_db(treble_raw)
 
-	var bass_n: float   = _adaptive_norm(bass_db, _bass_hist, _bass_state)
-	var mid_n: float    = _adaptive_norm(mid_db, _mid_hist, _mid_state)
-	var treble_n: float = _adaptive_norm(treble_db, _treble_hist, _treble_state)
+	var bass_n: float   = _adaptive_norm(bass_db, _bass_state)
+	var mid_n: float    = _adaptive_norm(mid_db, _mid_state)
+	var treble_n: float = _adaptive_norm(treble_db, _treble_state)
 
 	var fast_rate: float = 45.0
 	var slow_rate: float = 2.0
@@ -469,12 +461,12 @@ func _to_db(magnitude: float) -> float:
 	return clampf(linear_to_db(magnitude), -80.0, 0.0)
 
 
-func _adaptive_norm(value: float, hist: PackedFloat32Array, state: Dictionary) -> float:
-	# Скользящее окно min/max: кольцевой буфер фикс. размера + монотонные деки
-	# (пары [логический индекс, значение]). Амортизированно O(1) на кадр.
-	# ВАЖНО: в деках хранится монотонный счётчик _hist_idx, а НЕ слот кольца.
-	# Слот перезаиспользуется каждые HISTORY_LEN тактов, и вытеснение по нему
-	# ломало окно min/max сразу после первого переполнения буфера.
+func _adaptive_norm(value: float, state: Dictionary) -> float:
+	# Скользящее окно min/max: монотонные деки (пары [логический индекс,
+	# значение]). Вытеснение по монотонному счётчику _hist_idx, а не по слоту
+	# кольца — иначе окно min/max ломалось сразу после первого переполнения.
+	# pop_front() в GDScript это O(n), но n <= HISTORY_LEN (60), т.е. горит
+	# на уровне шума; честный кольцевой дек здесь не нужен.
 	var idxs: Array = state["min_idx"]
 	var minq: Array = state["min_val"]
 	var idxe: Array = state["max_idx"]
@@ -482,7 +474,6 @@ func _adaptive_norm(value: float, hist: PackedFloat32Array, state: Dictionary) -
 
 	var t: int = _hist_idx  # логический индекс нового отсчёта
 	_hist_idx += 1
-	hist[t & (HISTORY_LEN - 1)] = value
 
 	# Всё с индексом <= expired уже за левой границей окна [t-HISTORY_LEN+1; t].
 	var expired: int = t - HISTORY_LEN
@@ -1472,15 +1463,8 @@ func shuffle_letters(s: String) -> String:
 	var letters: Array = []
 	for i in range(s.length()):
 		letters.append(s[i])
-	for i in range(letters.size() - 1, 0, -1):
-		var j := randi() % (i + 1)
-		var tmp = letters[i]
-		letters[i] = letters[j]
-		letters[j] = tmp
-	var result := ""
-	for c in letters:
-		result += c
-	return result
+	letters.shuffle()
+	return "".join(PackedStringArray(letters))
 
 
 func get_main_mode(c: int) -> String:

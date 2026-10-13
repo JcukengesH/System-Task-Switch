@@ -185,19 +185,26 @@ func _fit_label_font_size() -> void:
 
 	var avail_w: float = size.x * 0.82
 	var avail_h: float = size.y * 0.62
+	var text: String = label.text
 
-	var max_size: int = 200
-	var min_size: int = 20
-	var s: int = max_size
+	# Бинарный поиск по чётным размерам 200..20: «влезает» монотонно
+	# выполняется при уменьшении шрифта, поэтому ~7 измерений вместо ~90.
+	var lo: int = 0
+	var hi: int = 90  # (200 - 20) / 2
+	while lo < hi:
+		var mid: int = (lo + hi) / 2
+		var s: int = 200 - 2 * mid
+		var ts: Vector2 = font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, s)
+		if ts.x <= avail_w and float(s) * 1.25 <= avail_h:
+			hi = mid
+		else:
+			lo = mid + 1
+	label.add_theme_font_size_override("font_size", 200 - 2 * lo)
 
-	while s > min_size:
-		var ts: Vector2 = font.get_string_size(label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, s)
-		var line_h: float = float(s) * 1.25
-		if ts.x <= avail_w and line_h <= avail_h:
-			break
-		s -= 2
 
-	label.add_theme_font_size_override("font_size", s)
+# Метрики ASCII-рамки зависят только от размера контрола и шрифта — кэшируем,
+# чтобы на каждый redraw не строить строки и не мерить шрифт заново.
+var _border_cache: Dictionary = {}
 
 
 func _draw_ascii_border() -> void:
@@ -205,18 +212,30 @@ func _draw_ascii_border() -> void:
 	if font == null:
 		font = ThemeDB.fallback_font
 	var fs: int = 18
-	var sample_size: Vector2 = font.get_string_size("M", HORIZONTAL_ALIGNMENT_LEFT, -1, fs)
-	var ch_w: float = sample_size.x
-	var ch_h: float = sample_size.y
-	if ch_w <= 0.0 or ch_h <= 0.0:
-		return
 
-	var cols: int = int(floor(size.x / ch_w))
-	var rows: int = int(floor(size.y / ch_h))
-	if cols < 4:
-		cols = 4
-	if rows < 4:
-		rows = 4
+	var key: String = str(int(size.x)) + "x" + str(int(size.y))
+	var m: Dictionary = _border_cache.get(key, {})
+	if m.is_empty():
+		var sample_size: Vector2 = font.get_string_size("M", HORIZONTAL_ALIGNMENT_LEFT, -1, fs)
+		var ch_w: float = sample_size.x
+		var ch_h: float = sample_size.y
+		if ch_w <= 0.0 or ch_h <= 0.0:
+			return
+		var cols: int = maxi(int(floor(size.x / ch_w)), 4)
+		var rows: int = maxi(int(floor(size.y / ch_h)), 4)
+		m = {
+			"ch_w": ch_w, "ch_h": ch_h, "cols": cols, "rows": rows,
+			"edge": "+" + "-".repeat(cols - 2) + "+",
+		}
+		if _border_cache.size() > 16:
+			_border_cache.clear()
+		_border_cache[key] = m
+
+	var ch_w: float = m["ch_w"]
+	var ch_h: float = m["ch_h"]
+	var cols: int = m["cols"]
+	var rows: int = m["rows"]
+	var edge: String = m["edge"]
 
 	var boost: float = _pulse if is_active_zone else 0.0
 	var color: Color
@@ -227,30 +246,26 @@ func _draw_ascii_border() -> void:
 
 	var y_top: float = 0.0
 	var y_bottom: float = float(rows - 1) * ch_h
+	var x_right: float = float(cols - 1) * ch_w
 
-	# Базовый слой рамки.
-	for c in range(cols):
-		var ch: String = "+" if (c == 0 or c == cols - 1) else "-"
-		var x: float = float(c) * ch_w
-		draw_string(font, Vector2(x, y_top), ch, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, color)
-		draw_string(font, Vector2(x, y_bottom), ch, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, color)
+	# Верх/низ — по одному draw_string (моноширинный шрифт даёт ту же
+	# раскладку, что прежний посимвольный цикл), бока — построчно.
+	draw_string(font, Vector2(0.0, y_top), edge, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, color)
+	draw_string(font, Vector2(0.0, y_bottom), edge, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, color)
 	for r in range(1, rows - 1):
 		var y: float = float(r) * ch_h
 		draw_string(font, Vector2(0.0, y), "|", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, color)
-		draw_string(font, Vector2(float(cols - 1) * ch_w, y), "|", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, color)
+		draw_string(font, Vector2(x_right, y), "|", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, color)
 
 	# Аудио-свечение поверх (только активный квадрант и заметный пульс).
 	if boost > 0.15:
 		var glow_col: Color = Color(1.0, 0.6, 0.2, boost * 0.6)
-		for c in range(cols):
-			var ch2: String = "+" if (c == 0 or c == cols - 1) else "-"
-			var x2: float = float(c) * ch_w
-			draw_string(font, Vector2(x2, y_top), ch2, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, glow_col)
-			draw_string(font, Vector2(x2, y_bottom), ch2, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, glow_col)
+		draw_string(font, Vector2(0.0, y_top), edge, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, glow_col)
+		draw_string(font, Vector2(0.0, y_bottom), edge, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, glow_col)
 		for r in range(1, rows - 1):
-			var y3: float = float(r) * ch_h
-			draw_string(font, Vector2(0.0, y3), "|", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, glow_col)
-			draw_string(font, Vector2(float(cols - 1) * ch_w, y3), "|", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, glow_col)
+			var y2: float = float(r) * ch_h
+			draw_string(font, Vector2(0.0, y2), "|", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, glow_col)
+			draw_string(font, Vector2(x_right, y2), "|", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, glow_col)
 
 
 func _draw_shapes() -> void:

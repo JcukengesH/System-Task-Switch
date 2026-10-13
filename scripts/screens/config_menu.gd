@@ -51,7 +51,11 @@ func _rebuild() -> void:
 	add_line("  +======================================+", Color.WHITE, 22)
 	add_line("", Color.WHITE, 20)
 
-	var is_full := DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN
+	# Оба fullscreen-режима (оконный и эксклюзивный) считаем «FULLSCREEN»;
+	# MAXIMIZED (дефолт проекта) показывается как оконный режим.
+	var mode: int = DisplayServer.window_get_mode()
+	var is_full: bool = mode == DisplayServer.WINDOW_MODE_FULLSCREEN \
+		or mode == DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN
 	_options = [
 		{"label": "DISPLAY: FULLSCREEN", "value": "fullscreen", "active": is_full, "suffix": ""},
 		{"label": "DISPLAY: WINDOWED",   "value": "windowed",   "active": not is_full, "suffix": ""},
