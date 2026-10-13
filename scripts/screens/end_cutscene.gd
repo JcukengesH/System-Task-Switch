@@ -8,6 +8,7 @@ const PASSWORD := "0778518456"
 
 var _waiting_for_input: bool = false
 var _entered: String = ""
+var bytes_earned: int = 0
 var _password_label: Label
 var _timer_label: Label
 var _time_left: float = CANCEL_TIMEOUT
@@ -53,6 +54,8 @@ func _run() -> void:
 
 	add_line("", Color.WHITE, 20)
 	add_line("> STATUS     : ARMED       (PROGRESS: 100%)", Color(1, 0.85, 0.2), 20)
+	if bytes_earned > 0:
+		add_line("> SALARY     : +%d BYTES" % bytes_earned, Color(0.45, 1.0, 0.45), 20)
 	add_line("> IMPERATOR PROTOCOL IS READY FOR LAUNCH.", Color(1, 0.85, 0.2), 20)
 	add_line("> WARNING: THIS ACTION CANNOT BE UNDONE.", Color(1, 0.6, 0.2), 20)
 

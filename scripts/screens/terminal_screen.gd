@@ -5,7 +5,7 @@ const STAGE_NAMES := [
 	"HEX-CYPHER",
 	"POLYMETRY",
 	"STROOPTEST",
-	"MASTERBOOT",
+	"THE SEQUENCE",
 ]
 var _vbox: VBoxContainer
 var _font: Font

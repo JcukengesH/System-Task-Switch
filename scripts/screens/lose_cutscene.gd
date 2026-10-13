@@ -6,6 +6,7 @@ signal menu_requested
 var reason: String = "errors_limit"
 var failed_stage: int = 1
 var progress_pct: int = 0
+var bytes_earned: int = 0
 
 var _handled: bool = false
 var _input_enabled: bool = false
@@ -45,7 +46,7 @@ func _reason_ru() -> String:
 		"timeout":
 			return "ВРЕМЯ ИСТЕКЛО"
 		"master_error":
-			return "ОШИБКА В МАСТЕР-РЕЖИМЕ"
+			return "ОШИБКА В THE SEQUENCE"
 		"aborted":
 			return "ПРОЦЕСС ОСТАНОВЛЕН ПОЛЬЗОВАТЕЛЕМ"
 		_:
@@ -102,6 +103,8 @@ func _run() -> void:
 	add_line("> ERROR CODE : " + _reason_code(), Color(1, 0.6, 0.2), 20)
 	add_line("> REASON     : " + _reason_ru(), Color(1, 0.6, 0.2), 20)
 	add_line("> STATUS     : TERMINATED  (PROGRESS: %d%%)" % progress_pct, Color(1, 0.6, 0.2), 20)
+	if bytes_earned > 0:
+		add_line("> SALARY     : +%d BYTES" % bytes_earned, Color(0.45, 1.0, 0.45), 20)
 
 	await get_tree().create_timer(0.4).timeout
 	if _handled:

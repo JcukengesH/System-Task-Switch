@@ -2,7 +2,7 @@ extends TerminalScreen
 
 signal menu_action(action: String)
 
-const ITEMS := ["START", "CONFIGURATION", "HELP", "EXIT"]
+const ITEMS := ["START", "CONFIGURATION", "SYSTEM UPDATE", "HELP", "EXIT"]
 
 var _selected: int = 0
 var _item_labels: Array = []
@@ -63,7 +63,7 @@ func _input(event: InputEvent) -> void:
 				_selected = (_selected + 1) % ITEMS.size()
 				_update_selection()
 				SFX.key()
-			KEY_1, KEY_2, KEY_3, KEY_4:
+			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5:
 				var idx: int = event.keycode - KEY_1
 				if idx >= 0 and idx < ITEMS.size():
 					_selected = idx

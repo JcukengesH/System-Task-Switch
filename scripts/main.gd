@@ -3,7 +3,10 @@ extends Control
 const START_TIME := 15
 const MAX_TIME := 30.0          # верхний предел таймера (бар показывает честно)
 const BONUS_PER_CORRECT := 1.0
+# Лимит ошибок на этап задаётся покупкой «ДОПУСК ОШИБОК» (магазин SYSTEM
+# UPDATE), константа оставлена только как верхняя граница уровня механики.
 const MAX_ERRORS_PER_STAGE := 3
+const WIN_COMBO := 400
 const GARBAGE_TIMEOUT := 0.75
 
 const VOWELS := ["A", "E", "I", "O"]
@@ -106,7 +109,7 @@ const POPUP_HINT_SECONDS := 5.0   # попап модификатора виси
 @onready var garbage_timer: Timer = $GarbageTimer
 @onready var countdown_timer: Timer = $CountdownTimer
 
-enum State { BOOT, MENU, CONFIG, HELP, GAME, CUTSCENE }
+enum State { BOOT, MENU, CONFIG, HELP, GAME, CUTSCENE, SHOP }
 var current_state: int = State.BOOT
 
 var active := false
@@ -131,6 +134,14 @@ var debug_menu: PanelContainer
 var pause_indicator: Label
 var error_overlay: Label
 var _error_tween: Tween
+
+# Мета-прогрессия: байты, купленные модули/механики, очки за всё время.
+var meta: Dictionary = Meta.default_meta()
+var _run_bytes: int = 0        # заработано в текущем забеге
+var _debug_run: bool = false   # F3-старт: обходит гейт «этап не куплен»
+var bytes_label: Label
+var progress_label: Label
+var _bytes_pulse_tween: Tween
 
 # Попап-подсказка (правила этапа / включение модификатора).
 var answer_popup: PanelContainer
@@ -222,6 +233,7 @@ func _ready() -> void:
 	_build_pause_indicator()
 	_build_error_overlay()
 	_build_answer_popup()
+	_build_meta_hud()
 	_set_game_input_transparent()
 	_margin = get_node_or_null("Margin")
 	_apply_audio_settings()
@@ -535,7 +547,7 @@ func _create_bars() -> void:
 	combo_bar.name = "combo_bar"
 	combo_bar.font_size = 16
 	combo_bar.style = StatBar.Style.SEGMENTS
-	combo_bar.max_value = 400.0
+	combo_bar.max_value = float(WIN_COMBO)
 	combo_bar.segments = 4
 	combo_bar.anchor_left = 0.0
 	combo_bar.anchor_right = 1.0
@@ -544,6 +556,85 @@ func _create_bars() -> void:
 	combo_bar.offset_top = -28.0
 	combo_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(combo_bar)
+
+
+# Индикаторы над полосой прогресса: слева байты, справа процент прохождения.
+func _build_meta_hud() -> void:
+	bytes_label = Label.new()
+	bytes_label.name = "BytesLabel"
+	bytes_label.anchor_top = 1.0
+	bytes_label.anchor_bottom = 1.0
+	bytes_label.offset_left = 12
+	bytes_label.offset_top = -52.0
+	bytes_label.offset_right = 260
+	bytes_label.offset_bottom = -30.0
+	bytes_label.add_theme_font_size_override("font_size", 15)
+	bytes_label.add_theme_color_override("font_color", Color(0.45, 1.0, 0.45))
+	bytes_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bytes_label.visible = false
+	add_child(bytes_label)
+
+	progress_label = Label.new()
+	progress_label.name = "ProgressLabel"
+	progress_label.anchor_left = 1.0
+	progress_label.anchor_right = 1.0
+	progress_label.anchor_top = 1.0
+	progress_label.anchor_bottom = 1.0
+	progress_label.offset_left = -260
+	progress_label.offset_top = -52.0
+	progress_label.offset_right = -12
+	progress_label.offset_bottom = -30.0
+	progress_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	progress_label.add_theme_font_size_override("font_size", 15)
+	progress_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.75))
+	progress_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	progress_label.visible = false
+	add_child(progress_label)
+
+
+func _update_bytes_display() -> void:
+	if bytes_label:
+		bytes_label.text = "BYTES: %d" % (int(meta["bytes"]) + _run_bytes)
+
+
+func _update_progress_display() -> void:
+	if progress_label:
+		var pct: int = clampi(int(round(float(combo) * 100.0 / float(WIN_COMBO))), 0, 100)
+		progress_label.text = "ПРОГРЕСС: %d%%" % pct
+
+
+func _flash_byte_gain(amount: int) -> void:
+	_update_bytes_display()
+	if amount <= 0 or bytes_label == null:
+		return
+	# Всплывающий «+N B» над счётчиком: вверх + затухание.
+	var pop := Label.new()
+	pop.text = "+%d B" % amount
+	pop.anchor_top = 1.0
+	pop.anchor_bottom = 1.0
+	pop.offset_left = 12
+	pop.offset_top = -74.0
+	pop.offset_right = 160
+	pop.offset_bottom = -54.0
+	pop.add_theme_font_size_override("font_size", 15)
+	pop.add_theme_color_override("font_color", Color(0.45, 1.0, 0.45))
+	pop.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if _terminal_font:
+		pop.add_theme_font_override("font", _terminal_font)
+	add_child(pop)
+	var tw := create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(pop, "offset_top", -104.0, 0.7)
+	tw.tween_property(pop, "offset_bottom", -84.0, 0.7)
+	tw.tween_property(pop, "modulate:a", 0.0, 0.7)
+	tw.chain().tween_callback(pop.queue_free)
+	# Пульс самого счётчика жёлтым.
+	if _bytes_pulse_tween != null and _bytes_pulse_tween.is_valid():
+		_bytes_pulse_tween.kill()
+	bytes_label.self_modulate = Color(1, 1, 1, 1)
+	_bytes_pulse_tween = create_tween()
+	_bytes_pulse_tween.tween_property(bytes_label, "self_modulate", Color(1, 0.9, 0.35, 1), 0.07)
+	_bytes_pulse_tween.tween_property(bytes_label, "self_modulate", Color(1, 1, 1, 1), 0.3)
 
 
 # ---------- UI-оверлеи ----------
@@ -590,13 +681,36 @@ func flash_error_number(n: int) -> void:
 
 
 func _register_error_and_flash() -> bool:
-	# Инкрементирует счётчик ошибок и показывает, сколько ошибок ОСТАЛОСЬ.
-	# Возвращает true, если лимит исчерпан (игру нужно заканчивать).
+	# Инкрементирует счётчик ошибок; возвращает true, если лимит исчерпан.
+	# Лимит = купленный «допуск ошибок» (0 ур. — любая ошибка фатальна).
+	# Если ошибка не фатальна — применяется купленный уровень отката.
 	errors_in_stage += 1
-	if errors_in_stage >= MAX_ERRORS_PER_STAGE:
+	var allowed: int = int(meta["tolerance"])
+	if errors_in_stage > allowed:
 		return true
-	flash_error_number(MAX_ERRORS_PER_STAGE - errors_in_stage)
+	flash_error_number(allowed - errors_in_stage)
+	_apply_rollback()
 	return false
+
+
+func _apply_rollback() -> void:
+	# 0: в начало игры · 1: в начало этапа · 2: -20 очков · 3: без отката.
+	match int(meta["rollback"]):
+		0:
+			combo = 0
+		1:
+			combo = get_mode_reset_value(combo)
+		2:
+			combo = maxi(0, combo - 20)
+		_:
+			pass
+	update_combo_display()
+	var new_mode := get_main_mode(combo)
+	if new_mode != mode:
+		# Откат уронил игрока на предыдущий этап: музыка и бюджет ошибок — новые.
+		mode = new_mode
+		errors_in_stage = 0
+		_update_music_for_mode()
 
 
 # ---------- Попапы-подсказки (стиль «терминальное окно») ----------
@@ -693,12 +807,12 @@ func _show_mode_popup(m: String) -> void:
 func _mode_rule_text(m: String) -> String:
 	match m:
 		"letters":
-			return "ВВЕРХУ:  [2] ГЛАСНАЯ · [1] СГЛАСНАЯ\nВНИЗУ:   [2] ЧЁТНАЯ · [1] НЕЧЁТНАЯ"
+			return "ВВЕРХУ:  [2] ГЛАСНАЯ · [1] СГЛАСНАЯ\nВНИЗУ:   [2] ЧЁТНАЯ · [1] НЕЧЁТНАЯ\n+1 B ЗА ВЕРНЫЙ ОТВЕТ"
 		"shapes":
-			return "СРАВНИ ЧИСЛО ГРАНЕЙ С ЦИФРОЙ\n[2] = РАВНО · [1] = НЕ РАВНО"
+			return "СРАВНИ ЧИСЛО ГРАНЕЙ С ЦИФРОЙ\n[2] = РАВНО · [1] = НЕ РАВНО\n+2 B ЗА ВЕРНЫЙ ОТВЕТ"
 		"stroop":
-			return "СРАВНИ ЦВЕТ ТЕКСТА С ЕГО НАЗВАНИЕМ\n[2] = СОВПАДАЕТ · [1] = НЕТ"
-	return "ВСЕ ТИПЫ ЗАДАНИЙ ВПЕРЕМЕШКУ\nЛЮБАЯ ОШИБКА — КОНЕЦ ИГРЫ"
+			return "СРАВНИ ЦВЕТ ТЕКСТА С ЕГО НАЗВАНИЕМ\n[2] = СОВПАДАЕТ · [1] = НЕТ\n+3 B ЗА ВЕРНЫЙ ОТВЕТ"
+	return "ВСЕ ТИПЫ ЗАДАНИЙ ВПЕРЕМЕШКУ\nБАЙТОВ НЕТ · ЛЮБАЯ ОШИБКА — КОНЕЦ ИГРЫ"
 
 
 func _maybe_show_mod_hint(submode: String) -> void:
@@ -853,7 +967,7 @@ func _on_debug_start_combo(c: int) -> void:
 	SFX.key()
 	if debug_menu:
 		debug_menu.visible = false
-	start_game(c)
+	start_game(c, true)
 
 
 # ---------- Экраны ----------
@@ -867,6 +981,10 @@ func _set_game_visible(v: bool) -> void:
 		combo_bar.visible = v
 	if error_overlay:
 		error_overlay.visible = false
+	if bytes_label:
+		bytes_label.visible = v
+	if progress_label:
+		progress_label.visible = v
 	if not v:
 		_popup_hide()
 
@@ -897,10 +1015,11 @@ func _show_main_menu() -> void:
 
 func _on_menu_action(action: String) -> void:
 	match action:
-		"start":         _start_game_from_menu()
-		"configuration": _show_config_menu()
-		"help":          _show_help_screen()
-		"exit":          _quit_with_sound()
+		"start":          _start_game_from_menu()
+		"configuration":  _show_config_menu()
+		"system update":  _show_system_update()
+		"help":           _show_help_screen()
+		"exit":           _quit_with_sound()
 
 
 func _quit_with_sound() -> void:
@@ -921,8 +1040,8 @@ func _start_game_from_menu() -> void:
 		_current_screen.queue_free()
 		_current_screen = null
 	_set_game_visible(true)
-	# Явно с нуля: иначе «START» из меню унаследует debug_start_combo после F3.
-	start_game(0)
+	# Старт с учёта купленного «пропуска этапа»; не наследует debug_start_combo.
+	start_game(_skip_start_combo())
 
 
 func _show_config_menu() -> void:
@@ -962,11 +1081,101 @@ func _show_help_screen() -> void:
 	_transition_to(m)
 
 
+# ---------- Магазин SYSTEM UPDATE ----------
+func _meta_snapshot() -> Dictionary:
+	return meta.duplicate(true)
+
+
+func _show_system_update() -> void:
+	current_state = State.SHOP
+	var m := preload("res://scripts/screens/system_update.gd").new()
+	m.buy_handler = _meta_buy
+	m.back_requested.connect(_show_main_menu)
+	# apply_meta до add_child: _ready() построит витрину уже с данными.
+	m.apply_meta(_meta_snapshot())
+	_transition_to(m)
+
+
+func _meta_buy(item: String) -> bool:
+	var ok := _meta_try_buy(item)
+	if ok:
+		SFX.key()
+	else:
+		SFX.error()
+	# Обновляем витрину свежим снапшотом (покупка/отказ).
+	if _current_screen and is_instance_valid(_current_screen) and _current_screen.has_method("apply_meta"):
+		_current_screen.apply_meta(_meta_snapshot())
+	return ok
+
+
+func _stage_owned(s: String) -> bool:
+	if s == "letters":
+		return true
+	return bool(meta["stages"].get(s, false))
+
+
+func _skip_start_combo() -> int:
+	return int(Meta.STAGE_START_COMBO[clampi(int(meta["skip"]), 0, 3)])
+
+
+func _meta_spend(price: int) -> bool:
+	if int(meta["bytes"]) < price:
+		return false
+	meta["bytes"] = int(meta["bytes"]) - price
+	return true
+
+
+func _meta_try_buy(item: String) -> bool:
+	match item:
+		"stage_shapes", "stage_stroop", "stage_master":
+			var stage: String = item.substr(6)
+			if _stage_owned(stage):
+				return false
+			var idx: int = Meta.STAGE_ORDER.find(stage)
+			if idx > 0 and not _stage_owned(str(Meta.STAGE_ORDER[idx - 1])):
+				return false
+			if not _meta_spend(int(Meta.STAGE_PRICES[stage])):
+				return false
+			meta["stages"][stage] = true
+		"tolerance":
+			var lvl: int = int(meta["tolerance"])
+			if lvl >= MAX_ERRORS_PER_STAGE or not _meta_spend(int(Meta.TOLERANCE_PRICES[lvl])):
+				return false
+			meta["tolerance"] = lvl + 1
+		"rollback":
+			# Линия заблокирована, пока допуск ошибок не куплен хотя бы в 1 ур.
+			var lvl2: int = int(meta["tolerance"])
+			if lvl2 < 1:
+				return false
+			var rb: int = int(meta["rollback"])
+			if rb >= 3 or not _meta_spend(int(Meta.ROLLBACK_PRICES[rb])):
+				return false
+			meta["rollback"] = rb + 1
+		"skip":
+			var sk: int = int(meta["skip"])
+			if sk >= 3:
+				return false
+			var need_stage: String = str(Meta.STAGE_ORDER[sk])
+			var prev_stage: String = "letters" if sk == 0 else str(Meta.STAGE_ORDER[sk - 1])
+			if not _stage_owned(need_stage):
+				return false
+			if int(meta["life"].get(prev_stage, 0)) < Meta.SKIP_REQ_POINTS:
+				return false
+			if not _meta_spend(int(Meta.SKIP_PRICES[sk])):
+				return false
+			meta["skip"] = sk + 1
+		_:
+			return false
+	_save_settings()
+	return true
+
+
 func _show_end_cutscene() -> void:
 	play_music("outro")
 	current_state = State.CUTSCENE
 	_set_game_visible(false)
 	var m := preload("res://scripts/screens/end_cutscene.gd").new()
+	m.bytes_earned = _run_bytes
 	m.cutscene_finished.connect(_show_main_menu)
 	_transition_to(m)
 
@@ -979,6 +1188,20 @@ func _show_lose_cutscene(reason: String, failed_stage: int, progress_pct: int) -
 	m.reason = reason
 	m.failed_stage = failed_stage
 	m.progress_pct = progress_pct
+	m.bytes_earned = _run_bytes
+	m.restart_requested.connect(_on_lose_restart)
+	m.menu_requested.connect(_show_main_menu)
+	_transition_to(m)
+
+
+func _show_shift_complete(completed_stages: int, progress_pct: int) -> void:
+	play_music("outro")
+	current_state = State.CUTSCENE
+	_set_game_visible(false)
+	var m := preload("res://scripts/screens/shift_complete.gd").new()
+	m.completed_stages = completed_stages
+	m.progress_pct = progress_pct
+	m.bytes_earned = _run_bytes
 	m.restart_requested.connect(_on_lose_restart)
 	m.menu_requested.connect(_show_main_menu)
 	_transition_to(m)
@@ -990,7 +1213,8 @@ func _on_lose_restart() -> void:
 		_current_screen.queue_free()
 		_current_screen = null
 	_set_game_visible(true)
-	start_game(0)
+	# Рестарт с учётом купленного «пропуска этапа» (ур.0 -> с нуля).
+	start_game(_skip_start_combo())
 
 func _abort_game() -> void:
 	if not active:
@@ -1036,6 +1260,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 # ---------- Настройки управления ----------
 func _load_settings() -> void:
+	meta = Meta.default_meta()
 	binding_answer1 = _default_key_binding(KEY_1)
 	binding_answer2 = _default_key_binding(KEY_2)
 	var cfg := ConfigFile.new()
@@ -1046,6 +1271,14 @@ func _load_settings() -> void:
 		sfx_volume = clampf(cfg.get_value("audio", "sfx_volume", 0.8), 0.0, 1.0)
 		crt_enabled = cfg.get_value("video", "crt", true)
 		music_fx_enabled = cfg.get_value("video", "music_fx", true)
+		meta["bytes"] = maxi(0, int(cfg.get_value("meta", "bytes", 0)))
+		for s in Meta.STAGE_ORDER:
+			meta["stages"][s] = bool(cfg.get_value("meta", "stage_" + str(s), false))
+		meta["tolerance"] = clampi(int(cfg.get_value("meta", "tolerance", 0)), 0, 3)
+		meta["rollback"] = clampi(int(cfg.get_value("meta", "rollback", 0)), 0, 3)
+		meta["skip"] = clampi(int(cfg.get_value("meta", "skip", 0)), 0, 3)
+		for st in ["letters", "shapes", "stroop", "master"]:
+			meta["life"][st] = maxi(0, int(cfg.get_value("meta", "life_" + st, 0)))
 
 
 func _default_key_binding(keycode: int) -> InputEventKey:
@@ -1089,6 +1322,14 @@ func _save_settings() -> void:
 	cfg.set_value("audio", "sfx_volume", sfx_volume)
 	cfg.set_value("video", "crt", crt_enabled)
 	cfg.set_value("video", "music_fx", music_fx_enabled)
+	cfg.set_value("meta", "bytes", int(meta["bytes"]))
+	for s in Meta.STAGE_ORDER:
+		cfg.set_value("meta", "stage_" + str(s), bool(meta["stages"][s]))
+	cfg.set_value("meta", "tolerance", int(meta["tolerance"]))
+	cfg.set_value("meta", "rollback", int(meta["rollback"]))
+	cfg.set_value("meta", "skip", int(meta["skip"]))
+	for st in ["letters", "shapes", "stroop", "master"]:
+		cfg.set_value("meta", "life_" + st, int(meta["life"][st]))
 	cfg.save(SETTINGS_PATH)
 
 
@@ -1488,6 +1729,11 @@ func show_next_item() -> void:
 	const STAGE_TIME_BONUS := 5.0
 	var new_mode := get_main_mode(combo)
 	if new_mode != mode:
+		# Гейт мета-прогрессии: следующий этап не куплен — забег успешно
+		# завершается на границе установленных модулей (F3-старт обходит).
+		if not _debug_run and not _stage_owned(new_mode):
+			end_game("stage_complete")
+			return
 		mode = new_mode
 		errors_in_stage = 0
 		_update_music_for_mode()
@@ -1530,15 +1776,7 @@ func update_timer_display() -> void:
 func update_combo_display() -> void:
 	if combo_bar:
 		combo_bar.value = float(combo)
-
-
-func reset_combo_to_mode_start() -> void:
-	combo = get_mode_reset_value(combo)
-	update_combo_display()
-	var new_mode := get_main_mode(combo)
-	if new_mode != mode:
-		mode = new_mode
-		errors_in_stage = 0
+	_update_progress_display()
 
 
 # ---------- Обработка ответа ----------
@@ -1564,7 +1802,6 @@ func handle_answer(button: int) -> void:
 		if _register_error_and_flash():
 			end_game("errors_limit")
 			return
-		reset_combo_to_mode_start()
 		show_next_item()
 		return
 
@@ -1582,8 +1819,15 @@ func handle_answer(button: int) -> void:
 		combo += 1
 		if combo > max_combo:
 			max_combo = combo
+		# Экономика забега: байты по курсу этапа (The Sequence — 0) и
+		# «очки за всё время» в статистику этого этапа.
+		var rate: int = int(Meta.BYTE_RATES.get(mode, 0))
+		meta["life"][mode] = int(meta["life"].get(mode, 0)) + 1
+		if rate > 0:
+			_run_bytes += rate
 		update_combo_display()
-		if combo >= 400:
+		_flash_byte_gain(rate)
+		if combo >= WIN_COMBO:
 			end_game("win")
 			return
 		timer_value += BONUS_PER_CORRECT
@@ -1610,7 +1854,6 @@ func handle_answer(button: int) -> void:
 		if _register_error_and_flash():
 			end_game("errors_limit")
 			return
-		reset_combo_to_mode_start()
 		show_next_item()
 
 
@@ -1644,16 +1887,26 @@ func end_game(reason: String) -> void:
 		q.set_transform_effect("none")
 
 	var stage_idx: int = get_stage_index(mode)
-	var progress_pct: int = clampi(int(round(float(combo) * 100.0 / 400.0)), 0, 100)
+	var progress_pct: int = clampi(int(round(float(combo) * 100.0 / float(WIN_COMBO))), 0, 100)
+
+	# Зарплата забега уходит в общий кошелёк и сохраняется. _run_bytes не
+	# обнуляем: катсцены печатают её как «SALARY», старт нового забега сбросит.
+	if _run_bytes > 0:
+		meta["bytes"] = int(meta["bytes"]) + _run_bytes
+	_save_settings()
 
 	if reason == "win":
 		_show_end_cutscene()
+	elif reason == "stage_complete":
+		_show_shift_complete(stage_idx, progress_pct)
 	else:
 		_show_lose_cutscene(reason, stage_idx, progress_pct)
 
 
 # ---------- Старт ----------
-func start_game(initial_combo: int = -1) -> void:
+func start_game(initial_combo: int = -1, debug: bool = false) -> void:
+	_debug_run = debug
+	_run_bytes = 0
 	if initial_combo < 0:
 		initial_combo = debug_start_combo
 	else:
@@ -1696,6 +1949,7 @@ func start_game(initial_combo: int = -1) -> void:
 
 	update_timer_display()
 	update_combo_display()
+	_update_bytes_display()
 
 	var first_item := generate_item()
 	current_item = first_item
