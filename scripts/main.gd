@@ -8,7 +8,7 @@ const GARBAGE_TIMEOUT := 0.75
 
 const QUADRANT_ORDER := [0, 1, 3, 2]
 
-const EFFECT_MIN := 0.28
+const EFFECT_MIN := 0.25
 const EFFECT_MAX := 1.0
 const EFFECT_COMBO_CAP := 300.0
 const EFFECT_RISE_SPEED := 1.5
@@ -974,14 +974,18 @@ func _update_effect_scale(delta: float) -> void:
 	var target: float = EFFECT_MIN
 	if current_state == State.GAME:
 		if combo <= int(EFFECT_COMBO_CAP):
-			# 0..300 : 0.15 .. 1.0
+			# 0..300 : EFFECT_MIN .. EFFECT_MAX
 			var t: float = clampf(float(combo) / EFFECT_COMBO_CAP, 0.0, 1.0)
 			target = lerpf(EFFECT_MIN, EFFECT_MAX, t)
 		else:
-			# 300..400 : 1.0 .. 1.5
+			# 300..400 : EFFECT_MAX .. EFFECT_MASTER_MAX
 			var t2: float = clampf(float(combo - int(EFFECT_COMBO_CAP)) / 100.0, 0.0, 1.0)
 			target = lerpf(EFFECT_MAX, EFFECT_MASTER_MAX, t2)
-	_effect_target = target
+	# Гибрид: искажения растут не только от комбо, но и от музыки — бас и
+	# верха «тянут» картинку к аналоговым помехам на пиках (в тишине — чисто).
+	if current_state == State.GAME and music_fx_enabled:
+		target += _fx.bass * 0.15 + _fx.treble * 0.08
+	_effect_target = clampf(target, 0.0, EFFECT_MASTER_MAX)
 	var speed: float = EFFECT_RISE_SPEED if _effect_target > _effect_current else EFFECT_FALL_SPEED
 	_effect_current = move_toward(_effect_current, _effect_target, speed * delta)
 	if _crt_material:
@@ -993,14 +997,14 @@ func _trigger_correct_shake() -> void:
 		return
 	if _shake_tween and _shake_tween.is_valid():
 		_shake_tween.kill()
-	# Аутентичный стиль: не «мультяшный» наклон, а горизонтальный срыв
-	# развёртки — три дискретных шага без интерполяции.
+	# Аутентичный стиль, смягчённый: горизонтальный срыв развёртки остался
+	# дискретным, но амплитуда уменьшена — текст не «уезжает» при каждом ответе.
 	var base_left: float = _margin.offset_left
 	_shake_tween = create_tween()
-	_shake_tween.tween_property(_margin, "offset_left", base_left + 7.0, 0.0)
-	_shake_tween.tween_interval(0.05)
-	_shake_tween.tween_property(_margin, "offset_left", base_left - 5.0, 0.0)
-	_shake_tween.tween_interval(0.05)
+	_shake_tween.tween_property(_margin, "offset_left", base_left + 4.0, 0.0)
+	_shake_tween.tween_interval(0.04)
+	_shake_tween.tween_property(_margin, "offset_left", base_left - 3.0, 0.0)
+	_shake_tween.tween_interval(0.04)
 	_shake_tween.tween_property(_margin, "offset_left", base_left, 0.0)
 
 func _apply_font_recursive(node: Node, font: Font) -> void:
