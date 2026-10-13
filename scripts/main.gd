@@ -811,12 +811,15 @@ func _read_binding(cfg: ConfigFile, key: String, fallback: InputEvent) -> InputE
 	if v == null or typeof(v) != TYPE_INT:
 		return fallback
 	if t == "mouse":
-		if int(v) <= MOUSE_BUTTON_NONE or int(v) >= MOUSE_BUTTON_MAX:
+		# Валидные кнопки: LEFT(1) … XBUTTON2(9). Сentinels *_MAX в 4.7 нет.
+		if int(v) < MOUSE_BUTTON_LEFT or int(v) > MOUSE_BUTTON_XBUTTON2:
 			return fallback
 		var mb := InputEventMouseButton.new()
 		mb.button_index = int(v)
 		return mb
-	if int(v) <= KEY_NONE or int(v) >= KEY_MAX:
+	# Мусор/обнулённый keycode: printable-диапазон начинается с KEY_SPACE(32),
+	# спецклавиши — с KEY_SPECIAL; всё меньше 32 не может быть биндингом.
+	if int(v) < 32:
 		return fallback
 	var k := InputEventKey.new()
 	k.keycode = int(v)
