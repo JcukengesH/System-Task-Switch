@@ -8,7 +8,7 @@ const GARBAGE_TIMEOUT := 0.75
 
 const QUADRANT_ORDER := [0, 1, 3, 2]
 
-const EFFECT_MIN := 0.4
+const EFFECT_MIN := 0.28
 const EFFECT_MAX := 1.0
 const EFFECT_COMBO_CAP := 300.0
 const EFFECT_RISE_SPEED := 1.5

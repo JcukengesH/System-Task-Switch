@@ -21,12 +21,13 @@ uniform float brightness : hint_range(0.5, 2.0) = 1.05;
 
 // «Аутентичный» стиль: картинка собирается на сетке низкого разрешения
 // (как 640x480 на кинескопе), а не рисуется гладко нативно.
-uniform float pixel_block : hint_range(1.0, 8.0) = 3.0;
+uniform float pixel_block : hint_range(1.0, 8.0) = 2.0;
 // Сигнальные артефакты, управляемые спектром музыки (см. spectrum_fx.gd):
 // бас рвёт синхронизацию по горизонтали, верха — по вертикали + шум.
-uniform float jitter_amount : hint_range(0.0, 0.05) = 0.014;
-uniform float roll_amount : hint_range(0.0, 0.08) = 0.035;
-uniform float grain_amount : hint_range(0.0, 0.25) = 0.09;
+// Держим заметно, но читаемо: текст — главный payload игры.
+uniform float jitter_amount : hint_range(0.0, 0.05) = 0.006;
+uniform float roll_amount : hint_range(0.0, 0.08) = 0.012;
+uniform float grain_amount : hint_range(0.0, 0.25) = 0.035;
 
 // Аудио-реакция (задаётся GDScript'ом).
 uniform float music_bass : hint_range(0.0, 1.0) = 0.0;
@@ -110,7 +111,7 @@ void fragment() {
 		// Развёртка: гасим каждую чётную строку ТВ-пикселя; середина музыки
 		// «поджигает» контраст полос (flicker по строкам).
 		float vrow = floor(quv.y * grid.y);
-		float scan = 1.0 - scanline_strength * eff * (1.0 + music_mid * 2.5) * mod(vrow, 2.0);
+		float scan = 1.0 - scanline_strength * eff * (1.0 + music_mid * 1.2) * mod(vrow, 2.0);
 		col *= clamp(scan, 0.0, 1.0);
 
 		vec2 vc = quv - 0.5;
@@ -123,8 +124,8 @@ void fragment() {
 
 		col *= 1.0 + sin(TIME * flicker_speed) * (flicker * eff);
 		// Доля — ступенчатая вспышка яркости, без плавного «дыхания».
-		col *= 1.0 + step(0.55, music_pulse) * music_flicker_boost * eff;
-		col *= brightness * (1.0 + step(0.7, music_pulse) * music_brightness_boost * 0.5 * eff);
+		col *= 1.0 + step(0.68, music_pulse) * music_flicker_boost * 0.6 * eff;
+		col *= brightness * (1.0 + step(0.8, music_pulse) * music_brightness_boost * 0.3 * eff);
 	}
 
 	COLOR = vec4(col, 1.0);
