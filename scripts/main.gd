@@ -774,9 +774,11 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if _event_matches(event, binding_answer1):
 		handle_answer(1)
+		get_viewport().set_input_as_handled()
 		return
 	if _event_matches(event, binding_answer2):
 		handle_answer(2)
+		get_viewport().set_input_as_handled()
 		return
 
 
@@ -806,14 +808,18 @@ func _read_binding(cfg: ConfigFile, key: String, fallback: InputEvent) -> InputE
 	# иначе keycode/button_index станет 0 и биндинг сломается.
 	var t: String = cfg.get_value("input", key + "_type", "")
 	var v: Variant = cfg.get_value("input", key + "_value", null)
-	if v == null:
+	if v == null or typeof(v) != TYPE_INT:
 		return fallback
 	if t == "mouse":
+		if int(v) <= MOUSE_BUTTON_NONE or int(v) >= MOUSE_BUTTON_MAX:
+			return fallback
 		var mb := InputEventMouseButton.new()
-		mb.button_index = v
+		mb.button_index = int(v)
 		return mb
+	if int(v) <= KEY_NONE or int(v) >= KEY_MAX:
+		return fallback
 	var k := InputEventKey.new()
-	k.keycode = v
+	k.keycode = int(v)
 	return k
 
 

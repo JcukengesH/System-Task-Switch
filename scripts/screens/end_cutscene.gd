@@ -22,6 +22,10 @@ func _ready() -> void:
 
 func _run() -> void:
 	await get_tree().create_timer(0.5).timeout
+	# Страховка: экран мог быть снят (queue_free) во время паузы — тогда
+	# продолжать печатать нельзя.
+	if not is_inside_tree():
+		return
 
 	var lines: Array = [
 		"> ACCESSING SECURE NODE 0x7F...",
@@ -38,6 +42,8 @@ func _run() -> void:
 		"> INITIATING SEQUENCE...",
 	]
 	await type_lines(lines, 0.13)
+	if not is_inside_tree():
+		return
 
 	# Все этапы пройдены — выводим OK для каждого.
 	var total: int = STAGE_NAMES.size()
@@ -45,12 +51,16 @@ func _run() -> void:
 		add_line("  [STAGE %d/%d]  %s >> OK" % [i + 1, total, STAGE_NAMES[i]],
 			Color(0.4, 1.0, 0.4), 20)
 		await get_tree().create_timer(0.35).timeout
+		if not is_inside_tree():
+			return
 
 	add_line("", Color.WHITE, 20)
 	add_line("  *** *** *** *** *** *** *** *** ***", Color(0.4, 1.0, 0.4), 22)
 	add_line("  !!!   PROTOCOL ARMED         !!!", Color(0.4, 1.0, 0.4), 26)
 	add_line("  *** *** *** *** *** *** *** *** ***", Color(0.4, 1.0, 0.4), 22)
 	await get_tree().create_timer(0.8).timeout
+	if not is_inside_tree():
+		return
 
 	add_line("", Color.WHITE, 20)
 	add_line("> STATUS     : ARMED       (PROGRESS: 100%)", Color(1, 0.85, 0.2), 20)
@@ -60,6 +70,8 @@ func _run() -> void:
 	add_line("> WARNING: THIS ACTION CANNOT BE UNDONE.", Color(1, 0.6, 0.2), 20)
 
 	await get_tree().create_timer(1.0).timeout
+	if not is_inside_tree():
+		return
 
 	add_line("", Color.WHITE, 20)
 	add_line("> AUTHORIZATION REQUIRED TO ABORT.", Color.WHITE, 22)
@@ -110,6 +122,8 @@ func _input(event: InputEvent) -> void:
 	if not _waiting_for_input or _abort_requested:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
+		# Ввод пароля: экран — единственный потребитель.
+		get_viewport().set_input_as_handled()
 		if event.keycode >= KEY_0 and event.keycode <= KEY_9:
 			var digit: int = event.keycode - KEY_0
 			_entered += str(digit)

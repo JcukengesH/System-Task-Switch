@@ -114,6 +114,9 @@ func _input(event: InputEvent) -> void:
 	if _locked:
 		return
 	if _listening_for >= 0:
+		# Режим переназначения: съедаем весь ввод, включая тики колеса,
+		# пока не получим новую клавишу/кнопку.
+		get_viewport().set_input_as_handled()
 		_handle_capture(event)
 		return
 
@@ -122,9 +125,11 @@ func _input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		_click_at(event.position)
+		get_viewport().set_input_as_handled()
 		return
 
 	if event is InputEventKey and event.pressed and not event.echo:
+		get_viewport().set_input_as_handled()
 		match event.keycode:
 			KEY_W, KEY_UP:
 				_selected = (_selected - 1 + _options.size()) % _options.size()

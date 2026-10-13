@@ -51,9 +51,13 @@ func _input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		_click_at(event.position)
+		get_viewport().set_input_as_handled()
 		return
 
 	if event is InputEventKey and event.pressed and not event.echo:
+		# Поглощаем клавишу целиком: экран меню — единственный потребитель,
+		# ивент не должен долететь до _unhandled_input игры при мгновенном старте.
+		get_viewport().set_input_as_handled()
 		match event.keycode:
 			KEY_W, KEY_UP:
 				_selected = (_selected - 1 + ITEMS.size()) % ITEMS.size()

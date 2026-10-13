@@ -140,6 +140,8 @@ func _input(event: InputEvent) -> void:
 	if _locked:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
+		# Экран — единственный потребитель: не даём ивенту долететь до игры.
+		get_viewport().set_input_as_handled()
 		match event.keycode:
 			KEY_ESCAPE, KEY_ENTER, KEY_KP_ENTER:
 				SFX.key()
