@@ -11,14 +11,6 @@ const GARBAGE_TIMEOUT := 0.75
 
 const QUADRANT_ORDER := [0, 1, 3, 2]
 
-const MUSIC_TRACKS := {
-	"menu":   {"intro": "res://audio/menu_intro_v2.ogg", "loop": "res://audio/menu_loop_v2.ogg"},
-	"stage1": {"intro": "res://audio/stage1_intro.ogg",  "loop": "res://audio/stage1_loop.ogg"},
-	"stage2": {"intro": "res://audio/stage2_intro.ogg",  "loop": "res://audio/stage2_loop.ogg"},
-	"stage3": {"intro": "res://audio/stage3_intro.ogg",  "loop": "res://audio/stage3_loop.ogg"},
-	"stage4": {"intro": "res://audio/stage4_intro.ogg",  "loop": "res://audio/stage4_loop.ogg"},
-	"outro":  {"intro": "res://audio/outro.ogg",         "loop": ""},
-}
 const EFFECT_MIN := 0.15
 const EFFECT_MAX := 1.0
 const EFFECT_COMBO_CAP := 300.0
@@ -140,11 +132,6 @@ var music_fx_enabled: bool = true
 
 var _crt_layer: CanvasLayer
 
-# Музыка.
-var _intro_player: AudioStreamPlayer
-var _loop_player: AudioStreamPlayer
-var _current_music_key: String = ""
-
 # Материал CRT-оверлея; аудио-реактивные параметры шейдера ведёт SpectrumFx.
 var _crt_material: ShaderMaterial
 # Порог отправки пульса в квадранты: set_pulse дёргаем только при реальном
@@ -161,6 +148,9 @@ var _gen := TaskGen.new()
 # Аудио-реактивщина CRT-шейдера (спектр -> огибающие -> параметры шейдера).
 var _fx := SpectrumFx.new()
 
+# Музыка (intro->loop плееры, трек-лист, громкость).
+var _music := MusicDeck.new()
+
 var _effect_current: float = EFFECT_MIN
 var _effect_target: float = EFFECT_MIN
 var _margin: Control
@@ -175,7 +165,7 @@ func _ready() -> void:
 	_create_bars()
 	_setup_crt_overlay()
 	_fx.attach_master_bus()
-	_setup_music()
+	_music.attach(self)
 	_build_debug_menu()
 	_build_pause_indicator()
 	_build_error_overlay()
@@ -183,7 +173,7 @@ func _ready() -> void:
 	_build_meta_hud()
 	_set_game_input_transparent()
 	_margin = get_node_or_null("Margin")
-	_apply_audio_settings()
+	_music.set_volume(music_volume)
 	_apply_sfx_volume()
 	_apply_crt_setting()
 
@@ -244,88 +234,6 @@ func _setup_crt_overlay() -> void:
 
 	layer.add_child(rect)
 	add_child(layer)
-
-
-# ---------- Музыка ----------
-func _setup_music() -> void:
-	_intro_player = AudioStreamPlayer.new()
-	_intro_player.bus = "Master"
-	_intro_player.volume_db = -6.0
-	_intro_player.finished.connect(_on_intro_finished)
-	add_child(_intro_player)
-
-	_loop_player = AudioStreamPlayer.new()
-	_loop_player.bus = "Master"
-	_loop_player.volume_db = -6.0
-	add_child(_loop_player)
-
-
-func _on_intro_finished() -> void:
-	var entry: Dictionary = MUSIC_TRACKS.get(_current_music_key, {})
-	var loop_path: String = entry.get("loop", "")
-	if loop_path == "":
-		return
-	var loop_stream: AudioStream = _load_music(loop_path, true)
-	if loop_stream == null:
-		return
-	_loop_player.stream = loop_stream
-	_loop_player.play()
-
-
-func _load_music(path: String, loop: bool) -> AudioStream:
-	if path == "" or not ResourceLoader.exists(path):
-		return null
-	var stream: AudioStream = load(path)
-	if stream == null:
-		return null
-	if stream is AudioStreamOggVorbis:
-		stream.loop = loop
-		if loop:
-			stream.loop_offset = 0.0
-	elif stream is AudioStreamWAV:
-		stream.loop_mode = AudioStreamWAV.LOOP_FORWARD if loop else AudioStreamWAV.LOOP_DISABLED
-		stream.loop_begin = 0
-	return stream
-
-
-func play_music(key: String) -> void:
-	if key == _current_music_key:
-		return
-	if _intro_player == null:
-		return
-
-	_current_music_key = key
-
-	if _intro_player.playing:
-		_intro_player.stop()
-	if _loop_player.playing:
-		_loop_player.stop()
-
-	var entry: Dictionary = MUSIC_TRACKS.get(key, {})
-	if entry.is_empty():
-		push_warning("play_music: неизвестный ключ '%s'" % key)
-		return
-
-	var intro_path: String = entry.get("intro", "")
-	var loop_path: String = entry.get("loop", "")
-
-	var intro_stream: AudioStream = _load_music(intro_path, false)
-	if intro_stream != null:
-		_intro_player.stream = intro_stream
-		_intro_player.play()
-	else:
-		var loop_stream: AudioStream = _load_music(loop_path, true)
-		if loop_stream != null:
-			_loop_player.stream = loop_stream
-			_loop_player.play()
-
-
-func _update_music_for_mode() -> void:
-	match mode:
-		"letters": play_music("stage1")
-		"shapes":  play_music("stage2")
-		"stroop":  play_music("stage3")
-		"master":  play_music("stage4")
 
 
 # ---------- Аудио-реактивный шейдер ----------
@@ -538,7 +446,7 @@ func _apply_rollback() -> void:
 		# Откат уронил игрока на предыдущий этап: музыка и бюджет ошибок — новые.
 		mode = new_mode
 		errors_in_stage = 0
-		_update_music_for_mode()
+		_music.play_for_mode(mode)
 
 
 # ---------- Попапы-подсказки (стиль «терминальное окно») ----------
@@ -834,7 +742,7 @@ func _show_boot_screen() -> void:
 
 func _show_main_menu() -> void:
 	current_state = State.MENU
-	play_music("menu")
+	_music.play("menu")
 	_set_game_visible(false)
 	var m := preload("res://scripts/screens/main_menu.gd").new()
 	m.menu_action.connect(_on_menu_action)
@@ -888,7 +796,7 @@ func _on_settings_changed(volume: float, sfx_vol: float, crt: bool, music_fx: bo
 	sfx_volume = clampf(sfx_vol, 0.0, 1.0)
 	crt_enabled = crt
 	music_fx_enabled = music_fx
-	_apply_audio_settings()
+	_music.set_volume(music_volume)
 	_apply_sfx_volume()
 	_apply_crt_setting()
 	_apply_music_fx_setting()
@@ -999,7 +907,7 @@ func _meta_try_buy(item: String) -> bool:
 
 
 func _show_end_cutscene() -> void:
-	play_music("outro")
+	_music.play("outro")
 	current_state = State.CUTSCENE
 	_set_game_visible(false)
 	var m := preload("res://scripts/screens/end_cutscene.gd").new()
@@ -1009,7 +917,7 @@ func _show_end_cutscene() -> void:
 
 
 func _show_lose_cutscene(reason: String, failed_stage: int, progress_pct: int) -> void:
-	play_music("outro")
+	_music.play("outro")
 	current_state = State.CUTSCENE
 	_set_game_visible(false)
 	var m = preload("res://scripts/screens/lose_cutscene.gd").new()
@@ -1031,7 +939,7 @@ func _on_lose_shop() -> void:
 
 
 func _show_shift_complete(completed_stages: int, progress_pct: int) -> void:
-	play_music("outro")
+	_music.play("outro")
 	current_state = State.CUTSCENE
 	_set_game_visible(false)
 	var m := preload("res://scripts/screens/shift_complete.gd").new()
@@ -1227,15 +1135,6 @@ func _make_subtree_ignore_mouse(node: Node) -> void:
 		_make_subtree_ignore_mouse(c)
 
 
-func _apply_audio_settings() -> void:
-	var v: float = clampf(music_volume, 0.0, 1.0)
-	var db: float = -80.0 if v <= 0.001 else linear_to_db(v)
-	if _intro_player:
-		_intro_player.volume_db = db
-	if _loop_player:
-		_loop_player.volume_db = db
-
-
 func _apply_crt_setting() -> void:
 	if is_instance_valid(_crt_layer):
 		_crt_layer.visible = crt_enabled
@@ -1343,7 +1242,7 @@ func show_next_item() -> void:
 			return
 		mode = new_mode
 		errors_in_stage = 0
-		_update_music_for_mode()
+		_music.play_for_mode(mode)
 		_show_mode_popup(new_mode)
 		# Бонус времени за переход на новый этап (один раз на этап).
 		var threshold: int = STAGE_BONUSES.get(new_mode, 0)
@@ -1546,7 +1445,7 @@ func start_game(initial_combo: int = -1, debug: bool = false) -> void:
 		if initial_combo >= t:
 			_stage_bonus_given[t] = true
 	mode = TaskGen.get_main_mode(combo)
-	_update_music_for_mode()
+	_music.play_for_mode(mode)
 
 	# Подсказки: при старте с высоким комбо (F3) пропущенные модификаторы
 	# не показываем, зато сразу даём попап правил текущего этапа.
