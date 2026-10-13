@@ -160,9 +160,9 @@ func hide_popup() -> void:
 		return
 	if _fade and _fade.is_valid():
 		_fade.kill()
-	_fade = _panel.create_tween()
-	_fade.tween_property(_panel, "modulate:a", 0.0, 0.25)
-	_fade.tween_callback(func() -> void: _panel.visible = false)
+	# Дискретно: исчезает сразу, без угасания.
+	_panel.modulate = Color(1, 1, 1, 1)
+	_panel.visible = false
 
 
 func _show(title: String, rule: String, keys_line: String, presses: int, seconds: float) -> void:
@@ -177,11 +177,9 @@ func _show(title: String, rule: String, keys_line: String, presses: int, seconds
 	_presses = presses
 	_time = seconds
 	_panel.visible = true
-	_panel.modulate = Color(1, 1, 1, 0)
-	if _fade and _fade.is_valid():
-		_fade.kill()
-	_fade = _panel.create_tween()
-	_fade.tween_property(_panel, "modulate:a", 1.0, 0.12)
+	# Аутентичный стиль: попап не проявывается фейдом — он либо есть, либо нет,
+	# как напечатанная строка на терминале.
+	_panel.modulate = Color(1, 1, 1, 1)
 
 
 func _rule_text(m: String) -> String:

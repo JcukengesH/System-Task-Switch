@@ -24,6 +24,8 @@ var _pulse: float = 0.0
 var _base_scale: Vector2 = Vector2.ONE
 var _base_rotation: float = 0.0
 var _press_scale: float = 1.0
+# Текущий цвет глифа — нужен, чтобы вернуть его после инверсионной вспышки.
+var _label_color: Color = Color.WHITE
 var _press_tween: Tween
 
 
@@ -79,18 +81,31 @@ func set_pulse(v: float) -> void:
 func play_correct_feedback() -> void:
 	if _press_tween and _press_tween.is_valid():
 		_press_tween.kill()
-	_press_scale = 0.82
+	# Аутентичный стиль: никакого пружинящего отскока. Верный ответ —
+	# мгновенная инверсия знака (белая плашка, чёрный глиф) на 2 кадра,
+	# как кратковременная перегрузка луча на кинескопе.
+	_press_scale = 1.0
 	_apply_content_transform()
-	queue_redraw()
+	if label == null or not label.visible:
+		return
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color.WHITE
+	sb.content_margin_left = 6.0
+	sb.content_margin_right = 6.0
+	sb.content_margin_top = 2.0
+	sb.content_margin_bottom = 2.0
+	label.add_theme_stylebox_override("normal", sb)
+	label.add_theme_color_override("font_color", Color.BLACK)
 	_press_tween = create_tween()
-	_press_tween.tween_method(_set_press_scale, 0.82, 1.0, 0.22)\
-		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	_press_tween.tween_interval(0.07)
+	_press_tween.tween_callback(_restore_label_color)
 
 
-func _set_press_scale(v: float) -> void:
-	_press_scale = v
-	_apply_content_transform()
-	queue_redraw()
+func _restore_label_color() -> void:
+	if label == null or not is_instance_valid(label):
+		return
+	label.remove_theme_stylebox_override("normal")
+	label.add_theme_color_override("font_color", _label_color)
 
 
 func set_fonts(regular: Font, bold: Font) -> void:
@@ -128,10 +143,12 @@ func show_text(text: String, color: Color, inv: bool = false) -> void:
 	label.text = text
 	if inv and font_bold:
 		label.add_theme_font_override("font", font_bold)
+		_label_color = Color.WHITE
 		label.add_theme_color_override("font_color", Color.WHITE)
 	else:
 		if font_regular:
 			label.add_theme_font_override("font", font_regular)
+		_label_color = color
 		label.add_theme_color_override("font_color", color)
 	label.add_theme_constant_override("outline_size", 0)
 	_fit_label_font_size()
@@ -161,6 +178,7 @@ func show_stroop(word: String, color: Color, inverse: bool) -> void:
 	else:
 		if font_regular:
 			label.add_theme_font_override("font", font_regular)
+	_label_color = color
 	label.add_theme_color_override("font_color", color)
 	label.add_theme_constant_override("outline_size", 0)
 	_fit_label_font_size()
