@@ -1192,9 +1192,17 @@ func _show_lose_cutscene(reason: String, failed_stage: int, progress_pct: int) -
 	m.failed_stage = failed_stage
 	m.progress_pct = progress_pct
 	m.bytes_earned = _run_bytes
+	m.bytes_balance = int(meta["bytes"])
 	m.restart_requested.connect(_on_lose_restart)
 	m.menu_requested.connect(_show_main_menu)
+	m.shop_requested.connect(_on_lose_shop)
 	_transition_to(m)
+
+
+func _on_lose_shop() -> void:
+	# Магазин прямо с экрана поражения: байты забега уже зачислены в
+	# end_game(), так что баланс на витрине актуален. «Назад» -> main menu.
+	_show_system_update()
 
 
 func _show_shift_complete(completed_stages: int, progress_pct: int) -> void:
