@@ -3,9 +3,6 @@ extends Control
 const START_TIME := 15
 const MAX_TIME := 30.0          # верхний предел таймера (бар показывает честно)
 const BONUS_PER_CORRECT := 1.0
-# Лимит ошибок на этап задаётся покупкой «ДОПУСК ОШИБОК» (магазин SYSTEM
-# UPDATE), константа оставлена только как верхняя граница уровня механики.
-const MAX_ERRORS_PER_STAGE := 3
 const WIN_COMBO := 400
 const GARBAGE_TIMEOUT := 0.75
 
@@ -101,7 +98,7 @@ var error_overlay: Label
 var _error_tween: Tween
 
 # Мета-прогрессия: байты, купленные модули/механики, очки за всё время.
-var meta: Dictionary = Meta.default_meta()
+var _meta := MetaStore.new()      # байты/этапы/механики + правила покупок
 var _run_bytes: int = 0        # заработано в текущем забеге
 var _debug_run: bool = false   # F3-старт: обходит гейт «этап не куплен»
 var bytes_label: Label
@@ -330,7 +327,7 @@ func _build_meta_hud() -> void:
 
 func _update_bytes_display() -> void:
 	if bytes_label:
-		bytes_label.text = "BYTES: %d" % (int(meta["bytes"]) + _run_bytes)
+		bytes_label.text = "BYTES: %d" % (_meta.balance() + _run_bytes)
 
 
 func _update_progress_display() -> void:
@@ -421,7 +418,7 @@ func _register_error_and_flash() -> bool:
 	# Лимит = купленный «допуск ошибок» (0 ур. — любая ошибка фатальна).
 	# Если ошибка не фатальна — применяется купленный уровень отката.
 	errors_in_stage += 1
-	var allowed: int = int(meta["tolerance"])
+	var allowed: int = _meta.tolerance()
 	if errors_in_stage > allowed:
 		return true
 	flash_error_number(allowed - errors_in_stage)
@@ -431,7 +428,7 @@ func _register_error_and_flash() -> bool:
 
 func _apply_rollback() -> void:
 	# 0: в начало игры · 1: в начало этапа · 2: -20 очков · 3: без отката.
-	match int(meta["rollback"]):
+	match _meta.rollback_level():
 		0:
 			combo = 0
 		1:
@@ -777,7 +774,7 @@ func _start_game_from_menu() -> void:
 		_current_screen = null
 	_set_game_visible(true)
 	# Старт с учёта купленного «пропуска этапа»; не наследует debug_start_combo.
-	start_game(_skip_start_combo())
+	start_game(_meta.skip_start_combo())
 
 
 func _show_config_menu() -> void:
@@ -818,92 +815,28 @@ func _show_help_screen() -> void:
 
 
 # ---------- Магазин SYSTEM UPDATE ----------
-func _meta_snapshot() -> Dictionary:
-	return meta.duplicate(true)
-
-
 func _show_system_update() -> void:
 	current_state = State.SHOP
 	var m := preload("res://scripts/screens/system_update.gd").new()
 	m.buy_handler = _meta_buy
 	m.back_requested.connect(_show_main_menu)
 	# apply_meta до add_child: _ready() построит витрину уже с данными.
-	m.apply_meta(_meta_snapshot())
+	m.apply_meta(_meta.snapshot())
 	_transition_to(m)
 
 
 func _meta_buy(item: String) -> bool:
-	var ok := _meta_try_buy(item)
+	# Правила покупки — в MetaStore; здесь звук, сохранение и обновление витрины.
+	var ok := _meta.try_buy(item)
 	if ok:
+		_save_settings()
 		SFX.key()
 	else:
 		SFX.error()
 	# Обновляем витрину свежим снапшотом (покупка/отказ).
 	if _current_screen and is_instance_valid(_current_screen) and _current_screen.has_method("apply_meta"):
-		_current_screen.apply_meta(_meta_snapshot())
+		_current_screen.apply_meta(_meta.snapshot())
 	return ok
-
-
-func _stage_owned(s: String) -> bool:
-	if s == "letters":
-		return true
-	return bool(meta["stages"].get(s, false))
-
-
-func _skip_start_combo() -> int:
-	return int(Meta.STAGE_START_COMBO[clampi(int(meta["skip"]), 0, 3)])
-
-
-func _meta_spend(price: int) -> bool:
-	if int(meta["bytes"]) < price:
-		return false
-	meta["bytes"] = int(meta["bytes"]) - price
-	return true
-
-
-func _meta_try_buy(item: String) -> bool:
-	match item:
-		"stage_shapes", "stage_stroop", "stage_master":
-			var stage: String = item.substr(6)
-			if _stage_owned(stage):
-				return false
-			var idx: int = Meta.STAGE_ORDER.find(stage)
-			if idx > 0 and not _stage_owned(str(Meta.STAGE_ORDER[idx - 1])):
-				return false
-			if not _meta_spend(int(Meta.STAGE_PRICES[stage])):
-				return false
-			meta["stages"][stage] = true
-		"tolerance":
-			var lvl: int = int(meta["tolerance"])
-			if lvl >= MAX_ERRORS_PER_STAGE or not _meta_spend(int(Meta.TOLERANCE_PRICES[lvl])):
-				return false
-			meta["tolerance"] = lvl + 1
-		"rollback":
-			# Линия заблокирована, пока допуск ошибок не куплен хотя бы в 1 ур.
-			var lvl2: int = int(meta["tolerance"])
-			if lvl2 < 1:
-				return false
-			var rb: int = int(meta["rollback"])
-			if rb >= 3 or not _meta_spend(int(Meta.ROLLBACK_PRICES[rb])):
-				return false
-			meta["rollback"] = rb + 1
-		"skip":
-			var sk: int = int(meta["skip"])
-			if sk >= 3:
-				return false
-			var need_stage: String = str(Meta.STAGE_ORDER[sk])
-			var prev_stage: String = "letters" if sk == 0 else str(Meta.STAGE_ORDER[sk - 1])
-			if not _stage_owned(need_stage):
-				return false
-			if int(meta["life"].get(prev_stage, 0)) < Meta.SKIP_REQ_POINTS:
-				return false
-			if not _meta_spend(int(Meta.SKIP_PRICES[sk])):
-				return false
-			meta["skip"] = sk + 1
-		_:
-			return false
-	_save_settings()
-	return true
 
 
 func _show_end_cutscene() -> void:
@@ -925,7 +858,7 @@ func _show_lose_cutscene(reason: String, failed_stage: int, progress_pct: int) -
 	m.failed_stage = failed_stage
 	m.progress_pct = progress_pct
 	m.bytes_earned = _run_bytes
-	m.bytes_balance = int(meta["bytes"])
+	m.bytes_balance = _meta.balance()
 	m.restart_requested.connect(_on_lose_restart)
 	m.menu_requested.connect(_show_main_menu)
 	m.shop_requested.connect(_on_lose_shop)
@@ -958,7 +891,7 @@ func _on_lose_restart() -> void:
 		_current_screen = null
 	_set_game_visible(true)
 	# Рестарт с учётом купленного «пропуска этапа» (ур.0 -> с нуля).
-	start_game(_skip_start_combo())
+	start_game(_meta.skip_start_combo())
 
 func _abort_game() -> void:
 	if not active:
@@ -1004,7 +937,6 @@ func _unhandled_input(event: InputEvent) -> void:
 
 # ---------- Настройки управления ----------
 func _load_settings() -> void:
-	meta = Meta.default_meta()
 	binding_answer1 = _default_key_binding(KEY_1)
 	binding_answer2 = _default_key_binding(KEY_2)
 	var cfg := ConfigFile.new()
@@ -1015,14 +947,7 @@ func _load_settings() -> void:
 		sfx_volume = clampf(cfg.get_value("audio", "sfx_volume", 0.8), 0.0, 1.0)
 		crt_enabled = cfg.get_value("video", "crt", true)
 		music_fx_enabled = cfg.get_value("video", "music_fx", true)
-		meta["bytes"] = maxi(0, int(cfg.get_value("meta", "bytes", 0)))
-		for s in Meta.STAGE_ORDER:
-			meta["stages"][s] = bool(cfg.get_value("meta", "stage_" + str(s), false))
-		meta["tolerance"] = clampi(int(cfg.get_value("meta", "tolerance", 0)), 0, 3)
-		meta["rollback"] = clampi(int(cfg.get_value("meta", "rollback", 0)), 0, 3)
-		meta["skip"] = clampi(int(cfg.get_value("meta", "skip", 0)), 0, 3)
-		for st in ["letters", "shapes", "stroop", "master"]:
-			meta["life"][st] = maxi(0, int(cfg.get_value("meta", "life_" + st, 0)))
+		_meta.load_from_cfg(cfg)
 
 
 func _default_key_binding(keycode: int) -> InputEventKey:
@@ -1066,14 +991,7 @@ func _save_settings() -> void:
 	cfg.set_value("audio", "sfx_volume", sfx_volume)
 	cfg.set_value("video", "crt", crt_enabled)
 	cfg.set_value("video", "music_fx", music_fx_enabled)
-	cfg.set_value("meta", "bytes", int(meta["bytes"]))
-	for s in Meta.STAGE_ORDER:
-		cfg.set_value("meta", "stage_" + str(s), bool(meta["stages"][s]))
-	cfg.set_value("meta", "tolerance", int(meta["tolerance"]))
-	cfg.set_value("meta", "rollback", int(meta["rollback"]))
-	cfg.set_value("meta", "skip", int(meta["skip"]))
-	for st in ["letters", "shapes", "stroop", "master"]:
-		cfg.set_value("meta", "life_" + st, int(meta["life"][st]))
+	_meta.save_to_cfg(cfg)
 	cfg.save(SETTINGS_PATH)
 
 
@@ -1237,7 +1155,7 @@ func show_next_item() -> void:
 	if new_mode != mode:
 		# Гейт мета-прогрессии: следующий этап не куплен — забег успешно
 		# завершается на границе установленных модулей (F3-старт обходит).
-		if not _debug_run and not _stage_owned(new_mode):
+		if not _debug_run and not _meta.stage_owned(new_mode):
 			end_game("stage_complete")
 			return
 		mode = new_mode
@@ -1328,7 +1246,7 @@ func handle_answer(button: int) -> void:
 		# Экономика забега: байты по курсу этапа (The Sequence — 0) и
 		# «очки за всё время» в статистику этого этапа.
 		var rate: int = int(Meta.BYTE_RATES.get(mode, 0))
-		meta["life"][mode] = int(meta["life"].get(mode, 0)) + 1
+		_meta.record_answer(mode)
 		if rate > 0:
 			_run_bytes += rate
 		update_combo_display()
@@ -1398,7 +1316,7 @@ func end_game(reason: String) -> void:
 	# Зарплата забега уходит в общий кошелёк и сохраняется. _run_bytes не
 	# обнуляем: катсцены печатают её как «SALARY», старт нового забега сбросит.
 	if _run_bytes > 0:
-		meta["bytes"] = int(meta["bytes"]) + _run_bytes
+		_meta.add_bytes(_run_bytes)
 	_save_settings()
 
 	if reason == "win":
