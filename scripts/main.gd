@@ -9,28 +9,7 @@ const MAX_ERRORS_PER_STAGE := 3
 const WIN_COMBO := 400
 const GARBAGE_TIMEOUT := 0.75
 
-const VOWELS := ["A", "E", "I", "O"]
-const CONSONANTS := ["G", "K", "M", "R"]
-const EVEN := ["2", "4", "6", "8"]
-const ODD := ["3", "5", "7", "9"]
-const GARBAGE_SYMBOLS := ["!", "@", "#", "$", "%", "^", "&", "*", "?", "+", "_", "№"]
 const QUADRANT_ORDER := [0, 1, 3, 2]
-
-const FIGURE_TYPES := ["circle", "triangle", "square", "pentagon", "hexagon", "octagon"]
-const SIDES_MAP := {
-	"circle": 0, "triangle": 3, "square": 4,
-	"pentagon": 5, "hexagon": 6, "octagon": 8
-}
-
-const COLOR_WORDS := [
-	{"name": "КРАСНЫЙ", "color": Color(0.85, 0.1, 0.1)},
-	{"name": "СИНИЙ", "color": Color(0.15, 0.25, 0.95)},
-	{"name": "ЗЕЛЕНЫЙ", "color": Color(0.15, 0.75, 0.15)},
-	{"name": "ЖЕЛТЫЙ", "color": Color(0.95, 0.8, 0.0)},
-	{"name": "БЕЛЫЙ", "color": Color(1, 1, 1)},
-	{"name": "ФИОЛЕТОВЫЙ", "color": Color(0.55, 0.15, 0.75)},
-	{"name": "ГОЛУБОЙ", "color": Color(0.1, 0.85, 0.9)}
-]
 
 const MUSIC_TRACKS := {
 	"menu":   {"intro": "res://audio/menu_intro_v2.ogg", "loop": "res://audio/menu_loop_v2.ogg"},
@@ -58,12 +37,6 @@ const HISTORY_LEN := 60
 
 # Бонус времени за переход на новый этап (порог комбо, один раз на этап).
 const STAGE_BONUSES := {"shapes": 100, "stroop": 200, "master": 300}
-
-const MOD_THRESHOLDS := {
-	"letters": {"randomQuadrant": 20, "flip": 40, "inverse": 60, "garbage": 80},
-	"shapes": {"missingEdge": 120, "mathExpression": 140, "twoShapes": 160, "garbage": 180},
-	"stroop": {"inverse": 220, "flip": 240, "shuffle": 260, "garbage": 280},
-}
 
 # ---------- Подсказки игроку (попапы в стиле терминала) ----------
 # Имена модификаторов для заголовка попапа.
@@ -200,8 +173,8 @@ var _shader_cache: Dictionary = {}
 var _screen_layer: CanvasLayer
 var _current_screen: TerminalScreen
 
-# Антиповтор слова в Струпе.
-var _last_stroop_word: String = ""
+# Генератор заданий (режимы, модификаторы, антиповтор Струпа — внутри него).
+var _gen := TaskGen.new()
 
 var _effect_current: float = EFFECT_MIN
 var _effect_target: float = EFFECT_MIN
@@ -693,13 +666,13 @@ func _apply_rollback() -> void:
 		0:
 			combo = 0
 		1:
-			combo = get_mode_reset_value(combo)
+			combo = TaskGen.get_mode_reset_value(combo)
 		2:
 			combo = maxi(0, combo - 20)
 		_:
 			pass
 	update_combo_display()
-	var new_mode := get_main_mode(combo)
+	var new_mode := TaskGen.get_main_mode(combo)
 	if new_mode != mode:
 		# Откат уронил игрока на предыдущий этап: музыка и бюджет ошибок — новые.
 		mode = new_mode
@@ -793,7 +766,7 @@ func _popup_hide() -> void:
 
 
 func _show_mode_popup(m: String) -> void:
-	var idx := clampi(get_stage_index(m), 1, TerminalScreen.STAGE_NAMES.size())
+	var idx := clampi(TaskGen.get_stage_index(m), 1, TerminalScreen.STAGE_NAMES.size())
 	_popup_show("ЭТАП %d — %s" % [idx, TerminalScreen.STAGE_NAMES[idx - 1]],
 		_mode_rule_text(m), true, POPUP_MODE_PRESSURES, 0.0)
 
@@ -810,7 +783,7 @@ func _mode_rule_text(m: String) -> String:
 
 
 func _maybe_show_mod_hint(submode: String) -> void:
-	var thresholds: Dictionary = MOD_THRESHOLDS.get(submode, {})
+	var thresholds: Dictionary = TaskGen.MOD_THRESHOLDS.get(submode, {})
 	var hints: Dictionary = MOD_HINTS.get(submode, {})
 	for key in thresholds:
 		var tag := str(submode) + "/" + str(key)
@@ -1454,209 +1427,6 @@ func _apply_font_recursive(node: Node, font: Font) -> void:
 		_apply_font_recursive(child, font)
 
 
-# ---------- Утилиты ----------
-func random_item(arr: Array):
-	return arr[randi() % arr.size()]
-
-
-func shuffle_letters(s: String) -> String:
-	var letters: Array = []
-	for i in range(s.length()):
-		letters.append(s[i])
-	letters.shuffle()
-	return "".join(PackedStringArray(letters))
-
-
-func get_main_mode(c: int) -> String:
-	if c >= 300: return "master"
-	if c >= 200: return "stroop"
-	if c >= 100: return "shapes"
-	return "letters"
-
-
-func get_mode_reset_value(c: int) -> int:
-	if c < 100: return 0
-	if c < 200: return 100
-	if c < 300: return 200
-	return 300
-
-
-func get_stage_index(m: String) -> int:
-	match m:
-		"letters": return 1
-		"shapes":  return 2
-		"stroop":  return 3
-		"master":  return 4
-	return 1
-
-
-func get_modifiers_for_submode(submode: String) -> Dictionary:
-	# Модификаторы описаны данными (MOD_THRESHOLDS), а не if-цепочкой.
-	var mods := {}
-	var thresholds: Dictionary = MOD_THRESHOLDS.get(submode, {})
-	for key in thresholds:
-		if combo >= int(thresholds[key]):
-			mods[key] = true
-	return mods
-
-
-func choose_submode() -> String:
-	if mode == "master":
-		return random_item(["letters", "shapes", "stroop"])
-	return mode
-
-
-# ---------- Генерация заданий ----------
-func generate_item() -> Dictionary:
-	var submode := choose_submode()
-	var mods := get_modifiers_for_submode(submode)
-
-	if mods.get("garbage", false) and randf() < 0.15:
-		var length := 3 + randi() % 3
-		var text := ""
-		for i in range(length):
-			text += random_item(GARBAGE_SYMBOLS)
-		return {"type": "garbage", "text": text, "submode": submode}
-
-	if submode == "letters":
-		return generate_letters_item(mods)
-	elif submode == "shapes":
-		return generate_shapes_item(mods)
-	return generate_stroop_item(mods)
-
-
-func generate_letters_item(mods: Dictionary) -> Dictionary:
-	var is_vowel := randf() < 0.5
-	var is_even := randf() < 0.5
-	var letter: String = random_item(VOWELS) if is_vowel else random_item(CONSONANTS)
-	var digit: String = random_item(EVEN) if is_even else random_item(ODD)
-	var is_red: bool = mods.get("inverse", false) and randf() < 0.2
-	return {
-		"type": "letter", "letter": letter, "digit": digit,
-		"isVowel": is_vowel, "isEven": is_even, "isRed": is_red,
-		"display": letter + digit, "submode": "letters"
-	}
-
-
-func _generate_math_expression() -> Dictionary:
-	if randf() < 0.5:
-		var a: int = randi() % 5 + 1
-		var b: int = randi() % 5 + 1
-		return {"text": "%d+%d" % [a, b], "value": a + b}
-	var a: int = randi() % 7 + 4
-	var b: int = randi() % (a - 1) + 1
-	return {"text": "%d-%d" % [a, b], "value": a - b}
-
-
-func generate_shapes_item(mods: Dictionary) -> Dictionary:
-	var figure_type: String = random_item(FIGURE_TYPES)
-	var sides: int = SIDES_MAP[figure_type]
-
-	var two_shapes := false
-	var second_sides: int = 0
-	if mods.get("twoShapes", false) and randf() < 0.2:
-		two_shapes = true
-		var fig2: String = random_item(FIGURE_TYPES)
-		second_sides = SIDES_MAP[fig2]
-
-	var missing_first := false
-	var missing_second := false
-	if mods.get("missingEdge", false):
-		if sides >= 3 and randf() < 0.35:
-			missing_first = true
-		if two_shapes and second_sides >= 3 and randf() < 0.35:
-			missing_second = true
-
-	var visible_first: int = sides - 1 if missing_first else sides
-	var visible_second: int = second_sides - 1 if missing_second else second_sides
-	var total_visible: int = visible_first + (visible_second if two_shapes else 0)
-
-	var digit_value: int
-	var digit_text: String = ""
-	var use_expr: bool = mods.get("mathExpression", false) and randf() < 0.35
-	if use_expr:
-		var expr := _generate_math_expression()
-		digit_value = expr["value"]
-		digit_text = expr["text"]
-	else:
-		if two_shapes:
-			if randf() < 0.5:
-				digit_value = min(total_visible, 16)
-			else:
-				digit_value = randi() % 17
-		else:
-			if randf() < 0.5:
-				digit_value = min(visible_first, 9)
-			else:
-				digit_value = randi() % 10
-
-	var digit_in_first := true
-	if two_shapes:
-		digit_in_first = randf() < 0.5
-
-	var correct: int
-	if two_shapes:
-		correct = 2 if total_visible == digit_value else 1
-	else:
-		correct = 2 if visible_first == digit_value else 1
-
-	return {
-		"type": "shape", "sides": sides, "digit": digit_value,
-		"digitText": digit_text,
-		"twoShapes": two_shapes, "secondSides": second_sides,
-		"digitInFirst": digit_in_first, "correct": correct,
-		"missingFirst": missing_first, "missingSecond": missing_second,
-		"submode": "shapes"
-	}
-
-
-func generate_stroop_item(mods: Dictionary) -> Dictionary:
-	var word_obj: Dictionary
-	var color_obj: Dictionary
-	var match_flag: bool
-
-	var word_pool: Array = []
-	for w in COLOR_WORDS:
-		if w["name"] != _last_stroop_word:
-			word_pool.append(w)
-	if word_pool.is_empty():
-		word_pool = COLOR_WORDS.duplicate()
-
-	if randf() < 0.5:
-		word_obj = random_item(word_pool)
-		color_obj = word_obj
-		match_flag = true
-	else:
-		word_obj = random_item(word_pool)
-		var filtered: Array = []
-		for c in COLOR_WORDS:
-			if c["name"] != word_obj["name"]:
-				filtered.append(c)
-		color_obj = random_item(filtered)
-		match_flag = false
-
-	_last_stroop_word = word_obj["name"]
-
-	var inverse: bool = mods.get("inverse", false) and randf() < 0.2
-	var shuffled := false
-	var shuffled_word: String = word_obj["name"]
-	if mods.get("shuffle", false) and randf() < 0.2:
-		shuffled = true
-		shuffled_word = shuffle_letters(word_obj["name"])
-
-	var correct := 2 if match_flag else 1
-	if inverse:
-		correct = 1 if correct == 2 else 2
-
-	var flip: bool = mods.get("flip", false) and randf() < 0.25
-
-	return {
-		"type": "stroop", "word": word_obj["name"], "colorValue": color_obj["color"],
-		"match": match_flag, "inverse": inverse, "shuffled": shuffled,
-		"shuffledWord": shuffled_word, "flip": flip, "correct": correct, "submode": "stroop"
-	}
-
-
 # ---------- Отображение ----------
 func display_item(item: Dictionary, quad_index: int) -> void:
 	# Оптимизация: раньше трогались все 4 квадранта на каждое задание.
@@ -1684,7 +1454,7 @@ func display_item(item: Dictionary, quad_index: int) -> void:
 			else:
 				quad.show_text(item["display"], Color.WHITE, false)
 			if combo >= 40 and randf() < 0.25:
-				quad.set_transform_effect(random_item(["flip-h", "flip-v", "rotate-180"]))
+				quad.set_transform_effect(TaskGen.random_item(TaskGen.TRANSFORMS))
 		"shape":
 			var second: int = item["secondSides"] if item["twoShapes"] else -1
 			var mf: bool = item.get("missingFirst", false)
@@ -1695,26 +1465,10 @@ func display_item(item: Dictionary, quad_index: int) -> void:
 			var word_to_show: String = item["shuffledWord"] if item["shuffled"] else item["word"]
 			quad.show_stroop(word_to_show, item["colorValue"], item["inverse"])
 			if item["flip"]:
-				quad.set_transform_effect(random_item(["flip-h", "flip-v", "rotate-180"]))
+				quad.set_transform_effect(TaskGen.random_item(TaskGen.TRANSFORMS))
 
 	current_item = item
 	current_quadrant = quad_index
-
-
-func get_correct_answer(item: Dictionary):
-	if item["type"] == "garbage":
-		return null
-	if item["type"] == "letter":
-		var is_top := current_quadrant < 2
-		var correct: int = (2 if item["isVowel"] else 1) if is_top else (2 if item["isEven"] else 1)
-		if item["isRed"]:
-			correct = 1 if correct == 2 else 2
-		return correct
-	if item["type"] == "shape":
-		return item["correct"]
-	if item["type"] == "stroop":
-		return item["correct"]
-	return null
 
 
 func show_next_item() -> void:
@@ -1722,7 +1476,7 @@ func show_next_item() -> void:
 		return
 
 	const STAGE_TIME_BONUS := 5.0
-	var new_mode := get_main_mode(combo)
+	var new_mode := TaskGen.get_main_mode(combo)
 	if new_mode != mode:
 		# Гейт мета-прогрессии: следующий этап не куплен — забег успешно
 		# завершается на границе установленных модулей (F3-старт обходит).
@@ -1740,12 +1494,12 @@ func show_next_item() -> void:
 			timer_value += STAGE_TIME_BONUS
 			update_timer_display()
 
-	var item := generate_item()
+	var item := _gen.generate_item(mode, combo)
 	current_item = item
 
 	var quad_index: int
 	if mode == "letters":
-		var mods := get_modifiers_for_submode("letters")
+		var mods := _gen.modifiers_for("letters", combo)
 		if mods.get("randomQuadrant", false) and randf() < 0.3:
 			quad_index = randi() % 4
 		else:
@@ -1805,7 +1559,7 @@ func handle_answer(button: int) -> void:
 	if current_item["type"] == "garbage":
 		return
 
-	var correct = get_correct_answer(current_item)
+	var correct = TaskGen.correct_answer(current_item, current_quadrant)
 	if correct == null:
 		return
 
@@ -1881,7 +1635,7 @@ func end_game(reason: String) -> void:
 		q.set_active(false)
 		q.set_transform_effect("none")
 
-	var stage_idx: int = get_stage_index(mode)
+	var stage_idx: int = TaskGen.get_stage_index(mode)
 	var progress_pct: int = clampi(int(round(float(combo) * 100.0 / float(WIN_COMBO))), 0, 100)
 
 	# Зарплата забега уходит в общий кошелёк и сохраняется. _run_bytes не
@@ -1933,15 +1687,15 @@ func start_game(initial_combo: int = -1, debug: bool = false) -> void:
 	for t in STAGE_BONUSES.values():
 		if initial_combo >= t:
 			_stage_bonus_given[t] = true
-	mode = get_main_mode(combo)
+	mode = TaskGen.get_main_mode(combo)
 	_update_music_for_mode()
 
 	# Подсказки: при старте с высоким комбо (F3) пропущенные модификаторы
 	# не показываем, зато сразу даём попап правил текущего этапа.
 	_hinted_mods = {}
-	for submode in MOD_THRESHOLDS:
-		for key in MOD_THRESHOLDS[submode]:
-			if initial_combo >= int(MOD_THRESHOLDS[submode][key]):
+	for submode in TaskGen.MOD_THRESHOLDS:
+		for key in TaskGen.MOD_THRESHOLDS[submode]:
+			if initial_combo >= int(TaskGen.MOD_THRESHOLDS[submode][key]):
 				_hinted_mods[str(submode) + "/" + str(key)] = true
 	_popup_hide()
 	_show_mode_popup(mode)
@@ -1950,7 +1704,7 @@ func start_game(initial_combo: int = -1, debug: bool = false) -> void:
 	update_combo_display()
 	_update_bytes_display()
 
-	var first_item := generate_item()
+	var first_item := _gen.generate_item(mode, combo)
 	current_item = first_item
 	var first_quad: int = QUADRANT_ORDER[0]
 	display_item(first_item, first_quad)
