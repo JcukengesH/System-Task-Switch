@@ -8,7 +8,7 @@ const GARBAGE_TIMEOUT := 0.75
 
 const QUADRANT_ORDER := [0, 1, 3, 2]
 
-const EFFECT_MIN := 0.15
+const EFFECT_MIN := 0.4
 const EFFECT_MAX := 1.0
 const EFFECT_COMBO_CAP := 300.0
 const EFFECT_RISE_SPEED := 1.5
@@ -65,6 +65,10 @@ var _run_bytes: int = 0        # заработано в текущем забе
 var _debug_run: bool = false   # F3-старт: обходит гейт «этап не куплен»
 var bytes_label: Label
 var progress_label: Label
+var vu_label: Label
+# Квантование обновления VU-метра: ~8 «кадров» в секунду, как стрелочный
+# индикатор на старом железе, а не плавный 60 FPS осциллограф.
+var _vu_accum: float = 0.0
 var _bytes_pulse_tween: Tween
 
 var _terminal_font: Font = null
@@ -86,6 +90,8 @@ var _crt_material: ShaderMaterial
 # Порог отправки пульса в квадранты: set_pulse дёргаем только при реальном
 # изменении beat-punch, а не каждый кадр.
 var _pulse_sent: float = -1.0
+# Спектр в этом кадре живой (музыка играет, FX включены) — для VU-метра.
+var _vu_live: bool = false
 
 # Менеджер экранов.
 var _screen_layer: CanvasLayer
@@ -193,11 +199,15 @@ func _process(delta: float) -> void:
 	_update_effect_scale(delta)
 
 	_popup.tick(delta, paused)
+	_tick_vu(delta)
 
 	if not music_fx_enabled:
+		_vu_live = false
 		return
 	if not _fx.update(delta, _crt_material):
+		_vu_live = false
 		return
+	_vu_live = true
 
 	if current_state == State.GAME:
 		# Пульс обновляем только когда величина реально изменилась — иначе
@@ -258,6 +268,21 @@ func _build_meta_hud() -> void:
 	bytes_label.visible = false
 	add_child(bytes_label)
 
+	# ASCII VU-метр спектра — «стрелочный индикатор» справа от счётчика байтов.
+	vu_label = Label.new()
+	vu_label.name = "VULabel"
+	vu_label.anchor_top = 1.0
+	vu_label.anchor_bottom = 1.0
+	vu_label.offset_left = 272
+	vu_label.offset_top = -50.0
+	vu_label.offset_right = 620
+	vu_label.offset_bottom = -30.0
+	vu_label.add_theme_font_size_override("font_size", 13)
+	vu_label.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	vu_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vu_label.visible = false
+	add_child(vu_label)
+
 	progress_label = Label.new()
 	progress_label.name = "ProgressLabel"
 	progress_label.anchor_left = 1.0
@@ -281,6 +306,25 @@ func _update_bytes_display() -> void:
 		bytes_label.text = "BYTES: %d" % (_meta.balance() + _run_bytes)
 		if _debug_run:
 			bytes_label.text += "   [F3-DEBUG: БЕЗ ПРОГРЕССА]"
+
+
+# VU-метр: обновляется ступенями ~8 раз/с — «дискретная электроника», не OS-осциллограф.
+func _tick_vu(delta: float) -> void:
+	if vu_label == null or not vu_label.visible:
+		return
+	_vu_accum += delta
+	if _vu_accum < 0.125:
+		return
+	_vu_accum = 0.0
+	var b: float = _fx.bass if _vu_live else 0.0
+	var m: float = _fx.mid if _vu_live else 0.0
+	var t: float = _fx.treble if _vu_live else 0.0
+	vu_label.text = "B%s M%s T%s" % [_vu_bars(b), _vu_bars(m), _vu_bars(t)]
+
+
+func _vu_bars(v: float) -> String:
+	var n: int = int(roundf(clampf(v, 0.0, 1.0) * 5.0))
+	return "▓".repeat(n) + "░".repeat(5 - n)
 
 
 func _update_progress_display() -> void:
@@ -308,12 +352,17 @@ func _flash_byte_gain(amount: int) -> void:
 	if _terminal_font:
 		pop.add_theme_font_override("font", _terminal_font)
 	add_child(pop)
+	# Аутентичный стиль: «+N B» не всплывает плавно, а шагает по строкам
+	# растра (3 дискретных шага) и гаснет ступенями.
 	var tw := create_tween()
-	tw.set_parallel(true)
-	tw.tween_property(pop, "offset_top", -104.0, 0.7)
-	tw.tween_property(pop, "offset_bottom", -84.0, 0.7)
-	tw.tween_property(pop, "modulate:a", 0.0, 0.7)
-	tw.chain().tween_callback(pop.queue_free)
+	for i in 3:
+		tw.tween_interval(0.16)
+		var step_idx := i
+		tw.tween_callback(func() -> void:
+			pop.offset_top -= 10.0
+			pop.offset_bottom -= 10.0
+			pop.modulate.a = 1.0 - float(step_idx + 1) * 0.34)
+	tw.tween_callback(pop.queue_free)
 	# Пульс самого счётчика жёлтым.
 	if _bytes_pulse_tween != null and _bytes_pulse_tween.is_valid():
 		_bytes_pulse_tween.kill()
@@ -561,6 +610,8 @@ func _set_game_visible(v: bool) -> void:
 		error_overlay.visible = false
 	if bytes_label:
 		bytes_label.visible = v
+	if vu_label:
+		vu_label.visible = v and music_fx_enabled
 	if progress_label:
 		progress_label.visible = v
 	if not v:
@@ -942,12 +993,15 @@ func _trigger_correct_shake() -> void:
 		return
 	if _shake_tween and _shake_tween.is_valid():
 		_shake_tween.kill()
-	_margin.pivot_offset = _margin.size / 2.0
-	var angle: float = randf_range(-1.2, 1.2)
+	# Аутентичный стиль: не «мультяшный» наклон, а горизонтальный срыв
+	# развёртки — три дискретных шага без интерполяции.
+	var base_left: float = _margin.offset_left
 	_shake_tween = create_tween()
-	_shake_tween.tween_property(_margin, "rotation_degrees", angle, 0.08)
-	_shake_tween.tween_property(_margin, "rotation_degrees", 0.0, 0.18)\
-		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	_shake_tween.tween_property(_margin, "offset_left", base_left + 7.0, 0.0)
+	_shake_tween.tween_interval(0.05)
+	_shake_tween.tween_property(_margin, "offset_left", base_left - 5.0, 0.0)
+	_shake_tween.tween_interval(0.05)
+	_shake_tween.tween_property(_margin, "offset_left", base_left, 0.0)
 
 func _apply_font_recursive(node: Node, font: Font) -> void:
 	if node is Control:
@@ -998,6 +1052,8 @@ func display_item(item: Dictionary, quad_index: int) -> void:
 
 	current_item = item
 	current_quadrant = quad_index
+	# Короткий «терминальный бип»: символ не просто появился — он отпечатался.
+	SFX.beep()
 
 
 func show_next_item() -> void:
