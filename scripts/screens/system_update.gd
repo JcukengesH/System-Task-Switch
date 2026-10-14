@@ -1,6 +1,8 @@
 extends TerminalScreen
 # Магазин улучшений «SYSTEM UPDATE». Покупки валидирует и применяет main.gd
 # через buy_handler; после покупки main присылает свежий снапшот в apply_meta().
+# Отдача 13: две колонки (модули этапов / механики), карточки из двух строк
+# (что + почём), крупнее шрифт, псевдографические рамки.
 
 signal back_requested
 
@@ -8,9 +10,17 @@ var buy_handler: Callable
 var _meta: Dictionary = {}
 
 var _selected: int = 0
-var _options: Array = []
-var _item_labels: Array = []
+var _options: Array = []          # навигационный порядок: этапы, механики, НАЗАД
+var _item_labels: Array = []      # заголовки карточек (по ним идёт rect-навигация)
+var _status_labels: Array = []    # вторые строки карточек (цена/статус)
 var _locked: bool = false
+
+const COL_BG := Color(0.55, 0.55, 0.55)
+const SEL_ON := Color(1.0, 0.85, 0.2)
+const SEL_OFF := Color(1.0, 0.4, 0.4)
+const DIM := Color(0.5, 0.5, 0.5)
+const GOOD := Color(0.45, 1.0, 0.45)
+const LOW := Color(1.0, 0.6, 0.3)
 
 
 # NOTE: не set_meta — имя занято Object.set_meta(StringName, Variant) в Godot.
@@ -35,159 +45,201 @@ func _lvl(key: String) -> int:
 	return int(_meta.get(key, 0))
 
 
-func _build_rows() -> Array:
-	var rows: Array = []
-	var bytes: int = int(_meta.get("bytes", 0))
+func _bytes() -> int:
+	return int(_meta.get("bytes", 0))
 
-	rows.append({"header": true, "text": "  -- МОДУЛИ ЭТАПОВ ------------------"})
+
+# Карточка: name — заголовок, status — вторая строка; enabled участвует в
+# подсветке и в праве покупки; affordable красит цену.
+func _card(name: String, status: String, enabled: bool, value: String,
+		owned: bool = false, price: int = -1) -> Dictionary:
+	return {"name": name, "status": status, "enabled": enabled,
+		"value": value, "owned": owned, "price": price}
+
+
+func _build_stage_cards() -> Array:
+	var cards: Array = []
 	for i in Meta.STAGE_ORDER.size():
 		var s: String = Meta.STAGE_ORDER[i]
 		var label: String = Meta.STAGE_LABELS[i + 1]
 		var price: int = int(Meta.STAGE_PRICES[s])
 		if _stage_owned(s):
-			rows.append({"text": "  МОДУЛЬ: %-13s" % label, "suffix": "[УСТАНОВЛЕНО]",
-				"enabled": false, "value": ""})
+			cards.append(_card("МОДУЛЬ: " + label, "УСТАНОВЛЕНО", false, "", true))
 		else:
 			var prev_ok: bool = i == 0 or _stage_owned(Meta.STAGE_ORDER[i - 1])
 			if not prev_ok:
-				rows.append({"text": "  МОДУЛЬ: %-13s" % label,
-					"suffix": "[НУЖЕН %s]" % Meta.STAGE_LABELS[i],
-					"enabled": false, "value": ""})
+				cards.append(_card("МОДУЛЬ: " + label,
+					"СНАЧАЛА: " + Meta.STAGE_LABELS[i], false, ""))
 			else:
-				rows.append({"text": "  МОДУЛЬ: %-13s" % label,
-					"suffix": "%d B" % price, "enabled": true, "value": "stage_" + s})
+				cards.append(_card("МОДУЛЬ: " + label, "ЦЕНА: %d B" % price,
+					true, "stage_" + s, false, price))
+	return cards
 
-	rows.append({"header": true, "text": "  -- МЕХАНИКИ -----------------------"})
 
-	# Допуск ошибок.
+func _build_mech_cards() -> Array:
+	var cards: Array = []
 	var tol: int = _lvl("tolerance")
 	if tol >= 3:
-		rows.append({"text": "  ДОПУСК ОШИБОК: УР.3/3", "suffix": "[МАКС]",
-			"enabled": false, "value": ""})
+		cards.append(_card("ДОПУСК ОШИБОК  УР.3/3", "МАКСИМУМ", false, "", true))
 	else:
-		rows.append({"text": "  ДОПУСК ОШИБОК: УР.%d/3 -> УР.%d" % [tol, tol + 1],
-			"suffix": "%d B" % Meta.TOLERANCE_PRICES[tol],
-			"enabled": true, "value": "tolerance"})
+		cards.append(_card("ДОПУСК ОШИБОК  УР.%d -> УР.%d" % [tol, tol + 1],
+			"ЦЕНА: %d B" % Meta.TOLERANCE_PRICES[tol], true, "tolerance",
+			false, Meta.TOLERANCE_PRICES[tol]))
 
 	# Откат прогресса: линия заблокирована до допуска 1-го уровня.
 	var rb: int = _lvl("rollback")
 	if tol < 1:
-		rows.append({"text": "  ОТКАТ ПРОГРЕССА", "suffix": "[НУЖЕН ДОПУСК УР.1]",
-			"enabled": false, "value": ""})
+		cards.append(_card("ОТКАТ ПРОГРЕССА", "НУЖЕН ДОПУСК УР.1", false, ""))
 	elif rb >= 3:
-		rows.append({"text": "  ОТКАТ: УР.3/3 (%s)" % Meta.ROLLBACK_DESC[3],
-			"suffix": "[МАКС]", "enabled": false, "value": ""})
+		cards.append(_card("ОТКАТ  УР.3/3 (%s)" % Meta.ROLLBACK_DESC[3],
+			"МАКСИМУМ", false, "", true))
 	else:
-		rows.append({"text": "  ОТКАТ: УР.%d/3 -> УР.%d (%s)" % [rb, rb + 1, Meta.ROLLBACK_DESC[rb + 1]],
-			"suffix": "%d B" % Meta.ROLLBACK_PRICES[rb],
-			"enabled": true, "value": "rollback"})
+		cards.append(_card("ОТКАТ  УР.%d -> УР.%d" % [rb, rb + 1],
+			"ЦЕНА: %d B · %s" % [Meta.ROLLBACK_PRICES[rb], Meta.ROLLBACK_DESC[rb + 1]],
+			true, "rollback", false, Meta.ROLLBACK_PRICES[rb]))
 
 	# Пропуск этапа: ур.N требует этап N купленным + 300 очков в предыдущем.
 	var sk: int = _lvl("skip")
 	if sk >= 3:
-		rows.append({"text": "  ПРОПУСК: УР.3/3 (СТАРТ: THE SEQUENCE)", "suffix": "[МАКС]",
-			"enabled": false, "value": ""})
+		cards.append(_card("ПРОПУСК  УР.3/3  СТАРТ: THE SEQUENCE",
+			"МАКСИМУМ", false, "", true))
 	else:
 		var need_stage: String = Meta.STAGE_ORDER[sk]
 		var prev_stage: String = "letters" if sk == 0 else Meta.STAGE_ORDER[sk - 1]
 		var life: int = int(_meta.get("life", {}).get(prev_stage, 0))
 		var cond_ok: bool = _stage_owned(need_stage) and life >= Meta.SKIP_REQ_POINTS
+		var head: String = "ПРОПУСК  УР.%d -> УР.%d" % [sk, sk + 1]
 		if not cond_ok:
-			var why: String = ""
+			var why: String
 			if not _stage_owned(need_stage):
-				why = "[НУЖЕН МОДУЛЬ %s]" % Meta.STAGE_LABELS[sk + 1]
+				why = "НУЖЕН МОДУЛЬ " + Meta.STAGE_LABELS[sk + 1]
 			else:
-				why = "[НУЖНО %d/%d ОЧКОВ: %s]" % [life, Meta.SKIP_REQ_POINTS, Meta.STAGE_LABELS[sk]]
-			rows.append({"text": "  ПРОПУСК: УР.%d/3 -> УР.%d (СТАРТ: %s)" % [sk, sk + 1, Meta.STAGE_LABELS[sk + 1]],
-				"suffix": why, "enabled": false, "value": ""})
+				why = "НУЖНО ОЧКОВ: %d/%d В %s" % [life, Meta.SKIP_REQ_POINTS,
+					Meta.STAGE_LABELS[sk]]
+			cards.append(_card(head + " · СТАРТ: " + Meta.STAGE_LABELS[sk + 1], why, false, ""))
 		else:
-			rows.append({"text": "  ПРОПУСК: УР.%d/3 -> УР.%d (СТАРТ: %s)" % [sk, sk + 1, Meta.STAGE_LABELS[sk + 1]],
-				"suffix": "%d B" % Meta.SKIP_PRICES[sk], "enabled": true, "value": "skip"})
-
-	rows.append({"text": "  НАЗАД", "suffix": "", "enabled": false, "value": "back"})
-	# Байты показываем в шапке, но строка нужна для единообразия навигации.
-	return rows
+			cards.append(_card(head + " · СТАРТ: " + Meta.STAGE_LABELS[sk + 1],
+				"ЦЕНА: %d B" % Meta.SKIP_PRICES[sk], true, "skip",
+				false, Meta.SKIP_PRICES[sk]))
+	return cards
 
 
 func _rebuild() -> void:
 	var prev_selected := _selected
 	clear_all()
-	add_line("", Color.WHITE, 20)
-	add_line("  +======================================+", Color.WHITE, 20)
-	add_line("  |            SYSTEM UPDATE             |", Color.WHITE, 20)
-	add_line("  +======================================+", Color.WHITE, 20)
-	add_line("  BYTES: %d" % int(_meta.get("bytes", 0)), Color(0.45, 1, 0.45), 20)
 	add_line("", Color.WHITE, 12)
+	add_line("  +==========================================+", Color.WHITE, 22)
+	add_line("  |               SYSTEM UPDATE                |", Color.WHITE, 22)
+	add_line("  +==========================================+", Color.WHITE, 22)
+	add_line("  BYTES: %d" % _bytes(), GOOD, 22)
+	add_line("", Color.WHITE, 8)
 
-	_options = _build_rows()
+	# Две колонки: [модули этапов] | [механики]. Навигация линейная:
+	# левая колонка сверху вниз, затем правая, затем НАЗАД.
+	var columns := HBoxContainer.new()
+	columns.add_theme_constant_override("separation", 56)
+	columns.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_vbox.add_child(columns)
+
+	var stage_cards := _build_stage_cards()
+	var mech_cards := _build_mech_cards()
+	var back := _card("НАЗАД", "В ГЛАВНОЕ МЕНЮ", false, "back")
+	_options = stage_cards + mech_cards + [back]
+
 	_item_labels.clear()
-	for row in _options:
-		if row.get("header", false):
-			add_line(str(row.get("text", "")), Color(0.55, 0.55, 0.55), 18)
-			continue
-		_item_labels.append(add_line("", Color.WHITE, 18))
+	_status_labels.clear()
+	var left := _build_column(columns, "МОДУЛИ ЭТАПОВ", 32)
+	var right := _build_column(columns, "МЕХАНИКИ СИСТЕМЫ", 32)
+	for card in stage_cards:
+		_add_card(left, card)
+	for card in mech_cards:
+		_add_card(right, card)
+	_add_card(right, back)
 
-	add_line("", Color.WHITE, 12)
+	add_line("", Color.WHITE, 8)
 	var life: Dictionary = _meta.get("life", {})
 	add_line("  ОЧКИ ЗА ВСЁ ВРЕМЯ: HEX %d · POLY %d · STR %d · SEQ %d" % [
 		int(life.get("letters", 0)), int(life.get("shapes", 0)),
 		int(life.get("stroop", 0)), int(life.get("master", 0)),
-	], Color(0.6, 0.6, 0.6), 16)
+	], Color(0.6, 0.6, 0.6), 17)
 	add_line("  [W/S] NAV   [ENTER] BUY   [MOUSE] CLICK   [ESC] BACK",
-		Color(0.6, 0.6, 0.6), 14)
+		Color(0.6, 0.6, 0.6), 16)
 
-	# Индекс выбора — среди navigable-строк.
-	_selected = clampi(prev_selected, 0, _nav_count() - 1)
+	_selected = clampi(prev_selected, 0, _options.size() - 1)
 	_update_selection()
 
 
-func _nav_count() -> int:
-	var n := 0
-	for row in _options:
-		if not row.get("header", false):
-			n += 1
-	return n
+func _build_column(parent: Control, title: String, width: int) -> VBoxContainer:
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(box)
+	var rule := "+" + "-".repeat(width - 2) + "+"
+	box.add_child(_col_label("  " + rule, COL_BG, 18))
+	box.add_child(_col_label("  |" + (" " + title).rpad(width - 2, " ") + "|",
+		Color(1.0, 0.9, 0.4), 18))
+	box.add_child(_col_label("  " + rule, COL_BG, 18))
+	box.add_child(_col_label("", Color.WHITE, 8))
+	return box
 
 
-# _selected хранит индекс среди navigable-строк; переводим в индекс _options.
-func _option_index(nav_idx: int) -> int:
-	var n := -1
-	for i in _options.size():
-		if not _options[i].get("header", false):
-			n += 1
-			if n == nav_idx:
-				return i
-	return 0
+func _add_card(box: VBoxContainer, card: Dictionary) -> void:
+	_item_labels.append(_col_label("", Color.WHITE, 20))
+	_status_labels.append(_col_label("", Color.WHITE, 17))
+	box.add_child(_item_labels[_item_labels.size() - 1])
+	box.add_child(_status_labels[_status_labels.size() - 1])
+	box.add_child(_col_label("", Color.WHITE, 6))
+
+
+func _col_label(text: String, color: Color, font_size: int) -> Label:
+	var lbl := Label.new()
+	lbl.text = text
+	lbl.add_theme_color_override("font_color", color)
+	lbl.add_theme_font_size_override("font_size", font_size)
+	if _font:
+		lbl.add_theme_font_override("font", _font)
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return lbl
 
 
 func _update_selection() -> void:
-	var nav := 0
 	for i in _options.size():
-		var row: Dictionary = _options[i]
-		if row.get("header", false):
+		var card: Dictionary = _options[i]
+		var lbl: Label = _item_labels[i]
+		var stat: Label = _status_labels[i]
+		if not is_instance_valid(lbl) or not is_instance_valid(stat):
 			continue
-		var lbl: Label = _item_labels[nav]
-		var prefix := ">> " if nav == _selected else "   "
-		lbl.text = "  " + prefix + str(row.get("text", "")).substr(2) + "  " + str(row.get("suffix", ""))
-		var color: Color = Color.WHITE
-		if nav == _selected:
-			color = Color(1, 0.85, 0.2) if row.get("enabled", false) else Color(1, 0.4, 0.4)
-		elif not row.get("enabled", false):
-			color = Color(0.5, 0.5, 0.5)
-		lbl.add_theme_color_override("font_color", color)
-		nav += 1
+		var sel: bool = i == _selected
+		var enabled: bool = card.get("enabled", false)
+		lbl.text = ">> " + str(card["name"]) if sel else "   " + str(card["name"])
+		if sel:
+			var is_back: bool = str(card.get("value", "")) == "back"
+			lbl.add_theme_color_override("font_color",
+				SEL_ON if (enabled or is_back) else SEL_OFF)
+		elif enabled:
+			lbl.add_theme_color_override("font_color", Color.WHITE)
+		else:
+			lbl.add_theme_color_override("font_color", DIM)
+		stat.text = "   " + str(card["status"])
+		var price: int = int(card.get("price", -1))
+		if card.get("owned", false):
+			stat.add_theme_color_override("font_color", GOOD)
+		elif price >= 0:
+			stat.add_theme_color_override("font_color", GOOD if _bytes() >= price else LOW)
+		else:
+			stat.add_theme_color_override("font_color", DIM)
 
 
 func _try_buy() -> void:
-	var row: Dictionary = _options[_option_index(_selected)]
-	var v: String = str(row.get("value", ""))
+	var card: Dictionary = _options[_selected]
+	var v: String = str(card.get("value", ""))
 	if v == "back":
 		_locked = true
 		SFX.key()
 		await clear_animated(0.03)
 		back_requested.emit()
 		return
-	if v == "":
+	if v == "" or not card.get("enabled", false):
 		SFX.error()
 		return
 	if buy_handler.is_valid():
@@ -211,11 +263,11 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		match event.keycode:
 			KEY_W, KEY_UP:
-				_selected = (_selected - 1 + _nav_count()) % _nav_count()
+				_selected = (_selected - 1 + _options.size()) % _options.size()
 				_update_selection()
 				SFX.key()
 			KEY_S, KEY_DOWN:
-				_selected = (_selected + 1) % _nav_count()
+				_selected = (_selected + 1) % _options.size()
 				_update_selection()
 				SFX.key()
 			KEY_ENTER, KEY_SPACE, KEY_KP_ENTER:
@@ -227,15 +279,15 @@ func _input(event: InputEvent) -> void:
 				back_requested.emit()
 
 
+# Оба лейбла карточки ведут на один индекс навигации.
 func _nav_at(pos: Vector2) -> int:
-	var nav := 0
 	for i in _options.size():
-		if _options[i].get("header", false):
-			continue
-		var lbl: Label = _item_labels[nav]
-		if lbl.get_global_rect().has_point(pos):
-			return nav
-		nav += 1
+		var lbl: Label = _item_labels[i]
+		var stat: Label = _status_labels[i]
+		if is_instance_valid(lbl) and lbl.get_global_rect().has_point(pos):
+			return i
+		if is_instance_valid(stat) and stat.get_global_rect().has_point(pos):
+			return i
 	return -1
 
 
