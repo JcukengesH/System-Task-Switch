@@ -2,7 +2,8 @@ extends TerminalScreen
 
 signal back_requested
 signal bindings_changed(answer1: InputEvent, answer2: InputEvent)
-signal settings_changed(volume: float, sfx_volume: float, crt: bool, music_fx: bool)
+signal settings_changed(volume: float, sfx_volume: float, crt: bool,
+		music_fx: bool, reactivity: float)
 
 var binding1: InputEvent
 var binding2: InputEvent
@@ -10,6 +11,7 @@ var music_volume: float = 0.8
 var sfx_volume: float = 0.8
 var crt_enabled: bool = true
 var music_fx_enabled: bool = true
+var fx_reactivity: float = 0.6
 
 var _selected: int = 0
 var _options: Array = []
@@ -24,11 +26,13 @@ func set_bindings(e1: InputEvent, e2: InputEvent) -> void:
 	binding2 = e2
 
 
-func set_settings(volume: float, sfx_vol: float, crt: bool, music_fx: bool) -> void:
+func set_settings(volume: float, sfx_vol: float, crt: bool, music_fx: bool,
+		reactivity: float = 0.6) -> void:
 	music_volume = volume
 	sfx_volume = sfx_vol
 	crt_enabled = crt
 	music_fx_enabled = music_fx
+	fx_reactivity = reactivity
 
 
 func _ready() -> void:
@@ -63,6 +67,7 @@ func _rebuild() -> void:
 		{"label": "ANSWER 2",            "value": "bind2",      "active": false, "suffix": " [" + _format_event(binding2) + "]"},
 		{"label": "MUSIC VOLUME",        "value": "volume",     "active": false, "suffix": "  [<] " + str(int(round(music_volume * 100.0))) + "% [>]"},
 		{"label": "SFX VOLUME",          "value": "sfx_volume", "active": false, "suffix": "  [<] " + str(int(round(sfx_volume * 100.0))) + "% [>]"},
+		{"label": "FX REACTIVITY",       "value": "reactivity", "active": false, "suffix": "  [<] " + str(int(round(fx_reactivity * 100.0))) + "% [>]"},
 		{"label": "CRT EFFECTS",         "value": "crt",        "active": crt_enabled, "suffix": ""},
 		{"label": "MUSIC REACTIVE FX",   "value": "music_fx",   "active": music_fx_enabled, "suffix": ""},
 		{"label": "BACK",                "value": "back",       "active": false, "suffix": ""},
@@ -195,7 +200,7 @@ func _click_at(pos: Vector2) -> void:
 			_selected = i
 			_update_selection()
 			SFX.key()
-			if opt["value"] == "volume" or opt["value"] == "sfx_volume":
+			if opt["value"] in ["volume", "sfx_volume", "reactivity"]:
 				_volume_click(lbl, pos, r)
 			else:
 				_select_option()
@@ -226,7 +231,7 @@ func _wheel_adjust(pos: Vector2, dir: int) -> void:
 		if not lbl.get_global_rect().has_point(pos):
 			continue
 		var v: String = _options[i]["value"]
-		if v != "volume" and v != "sfx_volume":
+		if v != "volume" and v != "sfx_volume" and v != "reactivity":
 			return
 		_selected = i
 		_update_selection()
@@ -244,6 +249,10 @@ func _adjust_current(dir: int) -> void:
 		_rebuild()
 	elif v == "sfx_volume":
 		sfx_volume = clampf(sfx_volume + delta, 0.0, 1.0)
+		emit_settings()
+		_rebuild()
+	elif v == "reactivity":
+		fx_reactivity = clampf(fx_reactivity + delta, 0.0, 1.0)
 		emit_settings()
 		_rebuild()
 
@@ -313,14 +322,15 @@ func _select_option() -> void:
 		emit_settings()
 		_rebuild()
 		return
-	if v == "volume" or v == "sfx_volume":
-		# Нажатие ENTER на строках громкости ничего не делает,
-		# регулировка — только через ←/→ или клик. Игнорируем.
+	if v == "volume" or v == "sfx_volume" or v == "reactivity":
+		# Нажатие ENTER на строках-слайдерах ничего не делает,
+		# регулировка — только через ←/→, колесо или клик по [<]/[>].
 		return
 
 
 func emit_settings() -> void:
-	settings_changed.emit(music_volume, sfx_volume, crt_enabled, music_fx_enabled)
+	settings_changed.emit(music_volume, sfx_volume, crt_enabled,
+		music_fx_enabled, fx_reactivity)
 
 
 func _show_listening_hint() -> void:

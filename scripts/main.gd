@@ -14,9 +14,11 @@ const EFFECT_COMBO_CAP := 300.0
 const EFFECT_RISE_SPEED := 1.5
 const EFFECT_FALL_SPEED := 1.2
 # Музыкальный слой искажений (music_effect в шейдере): суммарная «жёсткость»
-# огибающих спектра. Поднимается быстро на ударах, сползает медленно.
+# огибающих спектра. Поднимается на ударах, сползает медленно. Умножается на
+# fx_reactivity (слайдер в CONFIG) — по умолчанию приглушён, чтобы картинка
+# не «дрожала» от каждого бита.
 const MUSIC_EFFECT_MAX := 1.3
-const MUSIC_RISE_SPEED := 4.0
+const MUSIC_RISE_SPEED := 2.8
 const MUSIC_FALL_SPEED := 1.6
 const ANSWER_FEEDBACK_DELAY := 0.10
 # Окно молчания после старта забега: клик-рестарт (или его второй такт
@@ -85,6 +87,7 @@ var binding_answer2: InputEvent = null
 # Настройки пользователя (сохраняются в SETTINGS_PATH).
 var music_volume: float = 0.8      # 0.0..1.0
 var sfx_volume: float = 0.8
+var fx_reactivity: float = 0.6     # «дёрганость» графики от музыки, 0..1
 var crt_enabled: bool = true
 var music_fx_enabled: bool = true
 
@@ -219,10 +222,11 @@ func _process(delta: float) -> void:
 	if current_state == State.GAME:
 		# Пульс обновляем только когда величина реально изменилась — иначе
 		# set_pulse -> queue_redraw у активного квадранта каждый кадр.
-		if absf(_fx.pulse - _pulse_sent) > 0.005:
-			_pulse_sent = _fx.pulse
+		var pulse: float = _fx.pulse * (0.4 + 0.6 * fx_reactivity)
+		if absf(pulse - _pulse_sent) > 0.005:
+			_pulse_sent = pulse
 			for q in quadrants:
-				q.set_pulse(_fx.pulse if q.is_active_zone else 0.0)
+				q.set_pulse(pulse if q.is_active_zone else 0.0)
 
 
 # ---------- Верхние полоски ----------
@@ -703,16 +707,18 @@ func _show_config_menu() -> void:
 	current_state = State.CONFIG
 	var m = preload("res://scripts/screens/config_menu.gd").new()
 	m.set_bindings(binding_answer1, binding_answer2)
-	m.set_settings(music_volume, sfx_volume, crt_enabled, music_fx_enabled)
+	m.set_settings(music_volume, sfx_volume, crt_enabled, music_fx_enabled, fx_reactivity)
 	m.back_requested.connect(_show_main_menu)
 	m.bindings_changed.connect(_on_bindings_changed)
 	m.settings_changed.connect(_on_settings_changed)
 	_transition_to(m)
 
 
-func _on_settings_changed(volume: float, sfx_vol: float, crt: bool, music_fx: bool) -> void:
+func _on_settings_changed(volume: float, sfx_vol: float, crt: bool,
+		music_fx: bool, reactivity: float) -> void:
 	music_volume = clampf(volume, 0.0, 1.0)
 	sfx_volume = clampf(sfx_vol, 0.0, 1.0)
+	fx_reactivity = clampf(reactivity, 0.0, 1.0)
 	crt_enabled = crt
 	music_fx_enabled = music_fx
 	_music.set_volume(music_volume)
@@ -871,6 +877,7 @@ func _load_settings() -> void:
 		sfx_volume = clampf(cfg.get_value("audio", "sfx_volume", 0.8), 0.0, 1.0)
 		crt_enabled = cfg.get_value("video", "crt", true)
 		music_fx_enabled = cfg.get_value("video", "music_fx", true)
+		fx_reactivity = clampf(cfg.get_value("video", "reactivity", 0.6), 0.0, 1.0)
 		_meta.load_from_cfg(cfg)
 
 
@@ -922,6 +929,7 @@ func _save_settings() -> void:
 	cfg.set_value("audio", "sfx_volume", sfx_volume)
 	cfg.set_value("video", "crt", crt_enabled)
 	cfg.set_value("video", "music_fx", music_fx_enabled)
+	cfg.set_value("video", "reactivity", fx_reactivity)
 	_meta.save_to_cfg(cfg)
 	cfg.save(SETTINGS_PATH)
 
@@ -1019,7 +1027,7 @@ func _update_effect_scale(delta: float) -> void:
 	if current_state == State.GAME and music_fx_enabled:
 		mt = _fx.bass * 0.7 + _fx.lowmid * 0.45 + _fx.mid * 0.3 \
 			+ _fx.highmid * 0.5 + _fx.treble * 0.6 + _fx.beat * 0.8
-	_music_effect_target = clampf(mt, 0.0, MUSIC_EFFECT_MAX)
+	_music_effect_target = clampf(mt * fx_reactivity, 0.0, MUSIC_EFFECT_MAX)
 	var mspeed: float = MUSIC_RISE_SPEED if _music_effect_target > _music_effect_current else MUSIC_FALL_SPEED
 	_music_effect_current = move_toward(_music_effect_current, _music_effect_target, mspeed * delta)
 
