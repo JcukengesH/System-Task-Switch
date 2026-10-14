@@ -27,12 +27,25 @@ var _press_scale: float = 1.0
 # Текущий цвет глифа — нужен, чтобы вернуть его после инверсионной вспышки.
 var _label_color: Color = Color.WHITE
 var _press_tween: Tween
-# Фосфорный шлейф верного ответа (CRT ghosting, см. shaders/ghost.gdshader):
-# оверлей под контентом, ghost_amount 1->0 ведёт твин.
-var _ghost_rect: ColorRect
-var _ghost_mat: ShaderMaterial
+# Фосфорный шлейф верного ответа (CRT ghosting): копии самого знака,
+# разъезжающиеся и «остывающие» от бело-горячего к янтарному
+# (_draw_ghost_pass). Снимок содержимого берётся в момент удара
+# (_start_ghost), чтобы новая задача не «перекрашивала» чужой шлейф.
 var _ghost_tween: Tween
 var _ghost_value: float = 0.0
+var _gh_mode: int = Mode.NONE
+var _gh_text: String = ""
+var _gh_font: Font
+var _gh_font_size: int = 0
+var _gh_scale: Vector2 = Vector2.ONE
+var _gh_rot: float = 0.0
+var _gh_sides: int = 0
+var _gh_second_sides: int = -1
+var _gh_digit_text: String = ""
+var _gh_show_digit: bool = true
+var _gh_digit_in_first: bool = true
+var _gh_missing_first: bool = false
+var _gh_missing_second: bool = false
 # Фигуры (Polymetry) не имеют label — вспышка для них делается тоном линий.
 var _shape_flash: bool = false
 # «Черточка» под цифрой 6/9: при флипе/повороте она едет вместе с контентом
@@ -56,18 +69,6 @@ func _ready() -> void:
 	label.visible = false
 	content_root.add_child(label)
 
-	# Ghost-оверлей — под контентом (индекс 0), чтобы глифы оставались чёткими.
-	var ghost_shader := load("res://shaders/ghost.gdshader")
-	if ghost_shader != null:
-		_ghost_mat = ShaderMaterial.new()
-		_ghost_mat.shader = ghost_shader
-		_ghost_rect = ColorRect.new()
-		_ghost_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
-		_ghost_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		_ghost_rect.material = _ghost_mat
-		content_root.add_child(_ghost_rect)
-		content_root.move_child(_ghost_rect, 0)
-
 	_digit_mark = ColorRect.new()
 	_digit_mark.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_digit_mark.visible = false
@@ -90,6 +91,8 @@ func clear_item() -> void:
 		_press_tween.kill()
 	_press_scale = 1.0
 	_shape_flash = false
+	# Шлейф НЕ гасим: снимок знака дорисовывает своё затухание даже после
+	# смены задачи в квадранте (новая задача приходит сразу за ответом).
 	display_mode = Mode.NONE
 	label.visible = false
 	if _digit_mark:
@@ -147,10 +150,27 @@ func _end_flash() -> void:
 
 # Фосфорный шлейф: вспышка 1.0 -> длинное жёлтое затухание (CRT ghosting).
 func _start_ghost() -> void:
-	if _ghost_mat == null:
+	# Снимок того, что на экране прямо сейчас: шлейф дорисует именно этот
+	# знак, даже если квадрант уже успели заполнить новой задачей.
+	if display_mode == Mode.TEXT:
+		_gh_mode = Mode.TEXT
+		_gh_text = label.text
+		_gh_font = label.get_theme_font("font")
+		_gh_font_size = label.get_theme_font_size("font_size")
+		_gh_scale = _base_scale
+		_gh_rot = _base_rotation
+	elif display_mode == Mode.SHAPE:
+		_gh_mode = Mode.SHAPE
+		_gh_sides = shape_sides
+		_gh_second_sides = shape_second_sides
+		_gh_digit_text = shape_digit_text if shape_digit_text != "" else str(shape_digit)
+		_gh_show_digit = shape_show_digit
+		_gh_digit_in_first = shape_digit_in_first
+		_gh_missing_first = shape_missing_first
+		_gh_missing_second = shape_missing_second
+	else:
 		return
 	_ghost_value = 1.0
-	_ghost_mat.set_shader_parameter("ghost_amount", 1.0)
 	if _ghost_tween and _ghost_tween.is_valid():
 		_ghost_tween.kill()
 	_ghost_tween = create_tween()
@@ -161,11 +181,8 @@ func _start_ghost() -> void:
 
 func _set_ghost(v: float) -> void:
 	_ghost_value = v
-	if _ghost_mat:
-		_ghost_mat.set_shader_parameter("ghost_amount", v)
-	# Тон линий фигур зависит от шлейфа — просим перерисовку.
-	if _shape_flash or display_mode == Mode.SHAPE:
-		queue_redraw()
+	# Шлейф рисуется в _draw — просим перерисовку на каждый кадр твина.
+	queue_redraw()
 
 
 func set_fonts(regular: Font, bold: Font) -> void:
@@ -280,8 +297,49 @@ func show_stroop(word: String, color: Color, inverse: bool) -> void:
 
 func _draw() -> void:
 	_draw_ascii_border()
+	_draw_ghost_pass()
 	if display_mode == Mode.SHAPE:
 		_draw_shapes()
+
+
+# Фосфорный шлейф: копии самого знака (не пятно-ореол), разъезжающиеся
+# и бледнеющие. При остывании копии «расфокусировываются» (растёт радиус),
+# цвет уходит из бело-горячего в янтарный — как линии фигур выше.
+func _draw_ghost_pass() -> void:
+	if _ghost_value <= 0.02 or _gh_mode == Mode.NONE:
+		return
+	var g: float = _ghost_value
+	var col := Color(1.0, lerpf(0.55, 1.0, g), lerpf(0.12, 0.95, g))
+	var rad: float = 2.0 + (1.0 - g) * 8.0
+	if _gh_mode == Mode.TEXT:
+		# Текст живёт в content_root с флипом/поворотом — шлейф повторяет
+		# тот же преобразующий матричный порядок (T(c) R S T(-c)).
+		var xf := Transform2D.IDENTITY
+		xf = xf.translated(size / 2.0)
+		if _gh_rot != 0.0:
+			xf = xf.rotated(deg_to_rad(_gh_rot))
+		if _gh_scale != Vector2.ONE:
+			xf = xf.scaled(_gh_scale)
+		xf = xf.translated(-size / 2.0)
+		draw_set_transform_matrix(xf)
+		var font: Font = _gh_font if _gh_font != null else ThemeDB.fallback_font
+		var ts: Vector2 = font.get_string_size(_gh_text,
+			HORIZONTAL_ALIGNMENT_CENTER, -1, _gh_font_size)
+		var base: Vector2 = size / 2.0 - ts / 2.0 + Vector2(0, ts.y * 0.3)
+		var dirs := [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1),
+				Vector2(0.71, 0.71), Vector2(-0.71, 0.71),
+				Vector2(0.71, -0.71), Vector2(-0.71, -0.71)]
+		for d in dirs:
+			draw_string(font, base + d * rad, _gh_text,
+				HORIZONTAL_ALIGNMENT_CENTER, -1, _gh_font_size, Color(col, g * 0.20))
+		draw_string(font, base, _gh_text,
+			HORIZONTAL_ALIGNMENT_CENTER, -1, _gh_font_size, Color(col, g * 0.38))
+		draw_set_transform_matrix(Transform2D.IDENTITY)
+	else:
+		# Фигуры рисуются на самом квадранте без флипа — шлейф тоже.
+		_shape_geometry(Color(col, g * 0.22), 4.0 + rad * 1.8,
+			_gh_sides, _gh_second_sides, _gh_digit_text,
+			_gh_show_digit, _gh_digit_in_first, _gh_missing_first, _gh_missing_second)
 
 
 func _fit_label_font_size() -> void:
@@ -387,26 +445,6 @@ func _draw_shapes() -> void:
 		t = t.scaled(Vector2(_press_scale, _press_scale))
 		t = t.translated(size / 2.0)
 		draw_set_transform_matrix(t)
-
-	var dt: String = shape_digit_text if shape_digit_text != "" else str(shape_digit)
-	if shape_second_sides >= 0:
-		var gap: float = 20.0
-		var fig_width: float = (size.x - gap) / 2.0
-		var cx1: float = fig_width / 2.0
-		var cx2: float = size.x - fig_width / 2.0
-		var cy: float = size.y / 2.0
-		var r: float = min(fig_width, size.y) / 2.0 * 0.7
-		_draw_one_shape(Vector2(cx1, cy), r, shape_sides, dt, shape_digit_in_first, shape_missing_first)
-		_draw_one_shape(Vector2(cx2, cy), r, shape_second_sides, dt, not shape_digit_in_first, shape_missing_second)
-	else:
-		var cx: float = size.x / 2.0
-		var cy: float = size.y / 2.0
-		var r: float = min(size.x, size.y) / 2.0 * 0.7
-		_draw_one_shape(Vector2(cx, cy), r, shape_sides, dt, shape_show_digit, shape_missing_first)
-	if press_active:
-		draw_set_transform_matrix(Transform2D.IDENTITY)
-
-func _draw_one_shape(center: Vector2, r: float, sides: int, digit_text: String, show_digit: bool, missing_edge: bool) -> void:
 	# Во время вспышки/шлейфа линии «остывают» как люминофор:
 	# бело-жёлтые -> янтарные -> обычный белый.
 	var col := Color.WHITE
@@ -415,6 +453,35 @@ func _draw_one_shape(center: Vector2, r: float, sides: int, digit_text: String, 
 		var g: float = _ghost_value
 		col = Color(1.0, lerpf(0.55, 1.0, g), lerpf(0.12, 0.95, g))
 		w = 4.0 + g * 2.5
+	_shape_geometry(col, w, shape_sides, shape_second_sides,
+		shape_digit_text if shape_digit_text != "" else str(shape_digit),
+		shape_show_digit, shape_digit_in_first,
+		shape_missing_first, shape_missing_second)
+	if press_active:
+		draw_set_transform_matrix(Transform2D.IDENTITY)
+
+
+# Общая раскладка фигур (одна или две рядом) — и для чёткой отрисовки,
+# и для призрачных копий шлейфа.
+func _shape_geometry(col: Color, w: float, sides: int, second_sides: int,
+		dt: String, show_digit: bool, digit_in_first: bool,
+		missing_first: bool, missing_second: bool) -> void:
+	if second_sides >= 0:
+		var gap: float = 20.0
+		var fig_width: float = (size.x - gap) / 2.0
+		var cy: float = size.y / 2.0
+		var r: float = min(fig_width, size.y) / 2.0 * 0.7
+		_draw_one_shape(Vector2(fig_width / 2.0, cy), r, sides, dt,
+			digit_in_first, missing_first, col, w)
+		_draw_one_shape(Vector2(size.x - fig_width / 2.0, cy), r, second_sides, dt,
+			not digit_in_first, missing_second, col, w)
+	else:
+		var r2: float = min(size.x, size.y) / 2.0 * 0.7
+		_draw_one_shape(size / 2.0, r2, sides, dt, show_digit, missing_first, col, w)
+
+
+func _draw_one_shape(center: Vector2, r: float, sides: int, digit_text: String,
+		show_digit: bool, missing_edge: bool, col: Color, w: float) -> void:
 	if sides == 0:
 		draw_arc(center, r, 0.0, TAU, 48, col, w, true)
 	else:
