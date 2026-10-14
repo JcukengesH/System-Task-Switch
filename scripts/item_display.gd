@@ -326,11 +326,12 @@ func _draw_ghost_pass() -> void:
 		var ts: Vector2 = font.get_string_size(_gh_text,
 			HORIZONTAL_ALIGNMENT_CENTER, -1, _gh_font_size)
 		# Базовая линия ровно как у Label: строковый блок по вертикали
-		# центрирован, текст стоит на get_ascent. Иначе копии шлейфа
-		# «задрались» бы над глифом.
-		var line_h: float = font.get_line_height(_gh_font_size)
+		# центрирован, текст стоит на get_ascent. Для FontFile нет уверенности,
+		# что get_line_height/get_ascent есть, поэтому используем ts.y, который
+		# font.get_string_size гарантированно возвращает.
+		var line_h: float = ts.y
 		var base := Vector2(size.x / 2.0 - ts.x / 2.0,
-			(size.y - line_h) / 2.0 + font.get_ascent(_gh_font_size))
+			(size.y - line_h) / 2.0 + line_h * 0.75)
 		var dirs := [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1),
 				Vector2(0.71, 0.71), Vector2(-0.71, 0.71),
 				Vector2(0.71, -0.71), Vector2(-0.71, -0.71)]
