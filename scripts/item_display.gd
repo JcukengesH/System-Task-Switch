@@ -27,6 +27,17 @@ var _press_scale: float = 1.0
 # Текущий цвет глифа — нужен, чтобы вернуть его после инверсионной вспышки.
 var _label_color: Color = Color.WHITE
 var _press_tween: Tween
+# Фосфорный шлейф верного ответа (CRT ghosting, см. shaders/ghost.gdshader):
+# оверлей под контентом, ghost_amount 1->0 ведёт твин.
+var _ghost_rect: ColorRect
+var _ghost_mat: ShaderMaterial
+var _ghost_tween: Tween
+var _ghost_value: float = 0.0
+# Фигуры (Polymetry) не имеют label — вспышка для них делается тоном линий.
+var _shape_flash: bool = false
+# «Черточка» под цифрой 6/9: при флипе/повороте она едет вместе с контентом
+# и однозначно различает перевёрнутую шестёрку с девяткой.
+var _digit_mark: ColorRect
 
 
 func _ready() -> void:
@@ -45,6 +56,23 @@ func _ready() -> void:
 	label.visible = false
 	content_root.add_child(label)
 
+	# Ghost-оверлей — под контентом (индекс 0), чтобы глифы оставались чёткими.
+	var ghost_shader := load("res://shaders/ghost.gdshader")
+	if ghost_shader != null:
+		_ghost_mat = ShaderMaterial.new()
+		_ghost_mat.shader = ghost_shader
+		_ghost_rect = ColorRect.new()
+		_ghost_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+		_ghost_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_ghost_rect.material = _ghost_mat
+		content_root.add_child(_ghost_rect)
+		content_root.move_child(_ghost_rect, 0)
+
+	_digit_mark = ColorRect.new()
+	_digit_mark.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_digit_mark.visible = false
+	content_root.add_child(_digit_mark)
+
 	resized.connect(_on_resized)
 	_on_resized()
 
@@ -53,6 +81,7 @@ func _on_resized() -> void:
 	if content_root:
 		content_root.pivot_offset = size / 2.0
 	_fit_label_font_size()
+	_place_digit_mark()
 	queue_redraw()
 
 
@@ -60,8 +89,11 @@ func clear_item() -> void:
 	if _press_tween and _press_tween.is_valid():
 		_press_tween.kill()
 	_press_scale = 1.0
+	_shape_flash = false
 	display_mode = Mode.NONE
 	label.visible = false
+	if _digit_mark:
+		_digit_mark.visible = false
 	_apply_content_transform()
 	queue_redraw()
 
@@ -81,31 +113,59 @@ func set_pulse(v: float) -> void:
 func play_correct_feedback() -> void:
 	if _press_tween and _press_tween.is_valid():
 		_press_tween.kill()
-	# Аутентичный стиль: никакого пружинящего отскока. Верный ответ —
-	# мгновенная инверсия знака (белая плашка, чёрный глиф) на 2 кадра,
-	# как кратковременная перегрузка луча на кинескопе.
+	# Единый фидбек для всех режимов (включая Polymetry, где контента Label
+	# нет и ранний return съедал вспышку): мгновенная инверсия знака либо
+	# яркая вспышка линий фигуры, поверх — фосфорный шлейф (ghosting).
 	_press_scale = 1.0
 	_apply_content_transform()
-	if label == null or not label.visible:
-		return
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color.WHITE
-	sb.content_margin_left = 6.0
-	sb.content_margin_right = 6.0
-	sb.content_margin_top = 2.0
-	sb.content_margin_bottom = 2.0
-	label.add_theme_stylebox_override("normal", sb)
-	label.add_theme_color_override("font_color", Color.BLACK)
+	var has_label: bool = label != null and label.visible
+	if has_label:
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = Color.WHITE
+		sb.content_margin_left = 6.0
+		sb.content_margin_right = 6.0
+		sb.content_margin_top = 2.0
+		sb.content_margin_bottom = 2.0
+		label.add_theme_stylebox_override("normal", sb)
+		label.add_theme_color_override("font_color", Color.BLACK)
+	_shape_flash = display_mode == Mode.SHAPE and not has_label
+	if _shape_flash:
+		queue_redraw()
 	_press_tween = create_tween()
 	_press_tween.tween_interval(0.07)
-	_press_tween.tween_callback(_restore_label_color)
+	_press_tween.tween_callback(_end_flash)
+	_start_ghost()
 
 
-func _restore_label_color() -> void:
-	if label == null or not is_instance_valid(label):
+func _end_flash() -> void:
+	_shape_flash = false
+	if label != null and is_instance_valid(label) and label.visible:
+		label.remove_theme_stylebox_override("normal")
+		label.add_theme_color_override("font_color", _label_color)
+	queue_redraw()
+
+
+# Фосфорный шлейф: вспышка 1.0 -> длинное жёлтое затухание (CRT ghosting).
+func _start_ghost() -> void:
+	if _ghost_mat == null:
 		return
-	label.remove_theme_stylebox_override("normal")
-	label.add_theme_color_override("font_color", _label_color)
+	_ghost_value = 1.0
+	_ghost_mat.set_shader_parameter("ghost_amount", 1.0)
+	if _ghost_tween and _ghost_tween.is_valid():
+		_ghost_tween.kill()
+	_ghost_tween = create_tween()
+	_ghost_tween.tween_method(_set_ghost, 1.0, 0.0, 0.55) \
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	queue_redraw()
+
+
+func _set_ghost(v: float) -> void:
+	_ghost_value = v
+	if _ghost_mat:
+		_ghost_mat.set_shader_parameter("ghost_amount", v)
+	# Тон линий фигур зависит от шлейфа — просим перерисовку.
+	if _shape_flash or display_mode == Mode.SHAPE:
+		queue_redraw()
 
 
 func set_fonts(regular: Font, bold: Font) -> void:
@@ -152,7 +212,40 @@ func show_text(text: String, color: Color, inv: bool = false) -> void:
 		label.add_theme_color_override("font_color", color)
 	label.add_theme_constant_override("outline_size", 0)
 	_fit_label_font_size()
+	_update_digit_mark(text)
 	queue_redraw()
+
+
+# Различение 6/9 при флипе (HEX): под последней цифрой ставим короткую черту.
+# Черточка — ребёнок content_root, поэтому переворачивается вместе с глифом:
+# «6 с чёрточкой снизу» в перевёрнутом виде читается однозначно.
+func _update_digit_mark(text: String) -> void:
+	if _digit_mark == null:
+		return
+	var mark: bool = text.length() == 2 and (text[1] == "6" or text[1] == "9")
+	_digit_mark.visible = mark
+	if mark:
+		_digit_mark.color = _label_color
+		_place_digit_mark()
+
+
+func _place_digit_mark() -> void:
+	if _digit_mark == null or not _digit_mark.visible:
+		return
+	if label == null or size.x <= 1.0 or size.y <= 1.0:
+		return
+	var fs: int = label.get_theme_font_size("font_size")
+	var font: Font = label.get_theme_font("font")
+	if font == null:
+		font = ThemeDB.fallback_font
+	var cell: float = font.get_string_size("M", HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+	if cell <= 0.0:
+		return
+	# Текст из 2 символов центрирован: последний — на +0.5 ячейки от центра.
+	var cx: float = size.x / 2.0 + cell * 0.5
+	var h: float = maxf(3.0, fs * 0.07)
+	_digit_mark.size = Vector2(cell * 0.62, h)
+	_digit_mark.position = Vector2(cx - _digit_mark.size.x / 2.0, size.y / 2.0 + fs * 0.40)
 
 
 func show_shape(sides: int, digit: int, digit_text: String, show_digit: bool, second_sides: int, digit_in_first: bool, missing_first: bool = false, missing_second: bool = false) -> void:
@@ -314,8 +407,16 @@ func _draw_shapes() -> void:
 		draw_set_transform_matrix(Transform2D.IDENTITY)
 
 func _draw_one_shape(center: Vector2, r: float, sides: int, digit_text: String, show_digit: bool, missing_edge: bool) -> void:
+	# Во время вспышки/шлейфа линии «остывают» как люминофор:
+	# бело-жёлтые -> янтарные -> обычный белый.
+	var col := Color.WHITE
+	var w := 4.0
+	if _ghost_value > 0.02:
+		var g: float = _ghost_value
+		col = Color(1.0, lerpf(0.55, 1.0, g), lerpf(0.12, 0.95, g))
+		w = 4.0 + g * 2.5
 	if sides == 0:
-		draw_arc(center, r, 0.0, TAU, 48, Color.WHITE, 4.0, true)
+		draw_arc(center, r, 0.0, TAU, 48, col, w, true)
 	else:
 		var points := PackedVector2Array()
 		for i in range(sides):
@@ -327,10 +428,10 @@ func _draw_one_shape(center: Vector2, r: float, sides: int, digit_text: String, 
 				var nxt: int = (i + 1) % sides
 				if i == 0:
 					continue
-				draw_line(points[i], points[nxt], Color.WHITE, 4.0, true)
+				draw_line(points[i], points[nxt], col, w, true)
 		else:
 			points.append(points[0])
-			draw_polyline(points, Color.WHITE, 4.0, true)
+			draw_polyline(points, col, w, true)
 
 	if show_digit:
 		var font: Font = get_theme_font("font")
@@ -339,4 +440,4 @@ func _draw_one_shape(center: Vector2, r: float, sides: int, digit_text: String, 
 		var font_size: int = 40
 		var text_size: Vector2 = font.get_string_size(digit_text, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size)
 		var pos: Vector2 = center - text_size / 2.0 + Vector2(0, text_size.y * 0.3)
-		draw_string(font, pos, digit_text, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size, Color.WHITE)
+		draw_string(font, pos, digit_text, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size, col)
