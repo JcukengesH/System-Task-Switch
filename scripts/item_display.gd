@@ -325,7 +325,12 @@ func _draw_ghost_pass() -> void:
 		var font: Font = _gh_font if _gh_font != null else ThemeDB.fallback_font
 		var ts: Vector2 = font.get_string_size(_gh_text,
 			HORIZONTAL_ALIGNMENT_CENTER, -1, _gh_font_size)
-		var base: Vector2 = size / 2.0 - ts / 2.0 + Vector2(0, ts.y * 0.3)
+		# Базовая линия ровно как у Label: строковый блок по вертикали
+		# центрирован, текст стоит на get_ascent. Иначе копии шлейфа
+		# «задрались» бы над глифом.
+		var line_h: float = font.get_line_height(_gh_font_size)
+		var base := Vector2(size.x / 2.0 - ts.x / 2.0,
+			(size.y - line_h) / 2.0 + font.get_ascent(_gh_font_size))
 		var dirs := [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1),
 				Vector2(0.71, 0.71), Vector2(-0.71, 0.71),
 				Vector2(0.71, -0.71), Vector2(-0.71, -0.71)]
