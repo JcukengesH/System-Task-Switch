@@ -37,6 +37,18 @@ const FX_LAYER_MAX := [1.0, 0.7, 0.85, 1.0]
 const FX_LOG_K := 5.0
 const FX_RISE_SPEED := 0.9
 const FX_FALL_SPEED := 0.8
+# Короткие имена модификаторов: вспыхивают на весь экран при включении
+# (тот же приём, что большая цифра остатка ошибок).
+const MOD_FLASH_NAMES := {
+	"randomQuadrant": "ПОРЯДОК-",
+	"flip": "ПЕРЕВОРОТ+",
+	"inverse": "ИНВЕРСИЯ+",
+	"garbage": "ПОМЕХИ+",
+	"missingEdge": "ГРАНЬ-",
+	"mathExpression": "ПРИМЕР+",
+	"twoShapes": "ФИГУРА+",
+	"shuffle": "ДИСЛЕКСИЯ+",
+}
 const ANSWER_FEEDBACK_DELAY := 0.10
 # Окно молчания после старта забега: клик-рестарт (или его второй такт
 # двойного клика) не должен превращаться в ответ на первом символе.
@@ -81,6 +93,10 @@ var combo_bar: StatBar
 var debug_menu: PanelContainer
 var pause_indicator: Label
 var error_overlay: Label
+var announce_overlay: Label
+var _announce_tween: Tween
+# Пороги модификаторов, уже объявленные баннером в этом забеге.
+var _mods_flashed: Dictionary = {}
 var _error_tween: Tween
 
 # Мета-прогрессия: байты, купленные модули/механики, очки за всё время.
@@ -140,8 +156,6 @@ var _music_effect_current: float = 0.0
 var _music_effect_target: float = 0.0
 # Текущие веса стадийных слоёв (пульс/scan/glitch/madness), 0..1.
 var _fx_layers: Array = [0.0, 0.0, 0.0, 0.0]
-# Оверлей анимации смены этапа (живёт ~0.9 с).
-var _transition_layer: CanvasLayer = null
 var _margin: Control
 var _shake_tween: Tween
 var _answer_locked: bool = false
@@ -159,6 +173,7 @@ func _ready() -> void:
 	_build_pause_indicator()
 	_build_error_overlay()
 	_popup.build(self)
+	_build_announce_overlay()
 	_build_meta_hud()
 	_set_game_input_transparent()
 	_margin = get_node_or_null("Margin")
@@ -230,7 +245,6 @@ func _process(delta: float) -> void:
 	_update_effect_scale(delta)
 	_update_stage_fx_layers(delta)
 
-	_popup.tick(delta, paused)
 	_tick_vu(delta)
 
 	if not music_fx_enabled:
@@ -438,6 +452,22 @@ func _build_error_overlay() -> void:
 	add_child(error_overlay)
 
 
+# Полноэкранный баннер: крупная надпись по центру — по принципу красной
+# цифры ошибки, но текстом (объявление модификаторов, старт финала).
+func _build_announce_overlay() -> void:
+	announce_overlay = Label.new()
+	announce_overlay.name = "AnnounceOverlay"
+	announce_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	announce_overlay.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	announce_overlay.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	announce_overlay.add_theme_font_size_override("font_size", 150)
+	announce_overlay.add_theme_color_override("font_color", Color.WHITE)
+	announce_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	announce_overlay.visible = false
+	announce_overlay.modulate = Color(1, 1, 1, 0)
+	add_child(announce_overlay)
+
+
 func flash_error_number(n: int) -> void:
 	if error_overlay == null:
 		return
@@ -450,6 +480,65 @@ func flash_error_number(n: int) -> void:
 	_error_tween.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
 	_error_tween.tween_property(error_overlay, "modulate:a", 0.0, 1.0)
 	_error_tween.tween_callback(func() -> void: error_overlay.visible = false)
+
+
+# Баннеры по очереди: items = [{ "text", "color", "size" }].
+func flash_announcements(items: Array) -> void:
+	if announce_overlay == null or items.is_empty():
+		return
+	announce_overlay.visible = true
+	announce_overlay.modulate = Color(1, 1, 1, 0)
+	if _announce_tween and _announce_tween.is_valid():
+		_announce_tween.kill()
+	_announce_tween = create_tween()
+	for it in items:
+		_announce_tween.tween_callback(_set_announce.bind(it))
+		_announce_tween.tween_property(announce_overlay, "modulate:a", 1.0, 0.06)
+		_announce_tween.tween_interval(0.85)
+		_announce_tween.tween_property(announce_overlay, "modulate:a", 0.0, 0.4)
+	_announce_tween.tween_callback(func() -> void: announce_overlay.visible = false)
+
+
+func _set_announce(it: Dictionary) -> void:
+	announce_overlay.text = str(it.get("text", ""))
+	announce_overlay.add_theme_font_size_override("font_size", int(it.get("size", 150)))
+	announce_overlay.add_theme_color_override("font_color", it.get("color", Color.WHITE))
+
+
+# Первый переход порога модификатора за забег — белый баннер на весь экран.
+# Пороги, уже перескоченные на старте (F3-комбо), помечены объявленными
+# заранее и не сыпят баннерами подряд.
+func _flash_new_modifiers(submode: String, c: int) -> void:
+	var thresholds: Dictionary = TaskGen.MOD_THRESHOLDS.get(submode, {})
+	var items: Array = []
+	for key in thresholds:
+		var tag := submode + "/" + str(key)
+		if _mods_flashed.has(tag) or c < int(thresholds[key]):
+			continue
+		_mods_flashed[tag] = true
+		items.append({
+			"text": str(MOD_FLASH_NAMES.get(key, str(key))),
+			"color": Color.WHITE,
+			"size": 150,
+		})
+	if not items.is_empty():
+		flash_announcements(items)
+
+
+func _reset_mod_flashes(upto_combo: int) -> void:
+	_mods_flashed = {}
+	for submode in TaskGen.MOD_THRESHOLDS:
+		for key in TaskGen.MOD_THRESHOLDS[submode]:
+			if upto_combo >= int(TaskGen.MOD_THRESHOLDS[submode][key]):
+				_mods_flashed[str(submode) + "/" + str(key)] = true
+
+
+# Начало финального этапа: белый «ВСЁ+», затем красное «ОШИБКИ = 0».
+func _flash_master_intro() -> void:
+	flash_announcements([
+		{"text": "ВСЁ+", "color": Color.WHITE, "size": 220},
+		{"text": "ОШИБКИ = 0", "color": Color(0.9, 0.1, 0.1), "size": 150},
+	])
 
 
 func _register_error_and_flash() -> bool:
@@ -1098,65 +1187,6 @@ func _update_stage_fx_layers(delta: float) -> void:
 		_crt_material.set_shader_parameter("fx_madness", _fx_layers[3])
 
 
-# Короткая «пере-синхронизация терминала» при смене этапа: затемнение,
-# пробегающая полоса-срыв развёртки и имя этапа ~0.9 с. Геймплей не ставится
-# на паузу — попап правил читается сразу под угасающим переходом.
-func _play_stage_transition(new_mode: String) -> void:
-	if is_instance_valid(_transition_layer):
-		_transition_layer.queue_free()
-	var layer := CanvasLayer.new()
-	layer.layer = 90
-	add_child(layer)
-	_transition_layer = layer
-	var vp: Vector2 = get_viewport_rect().size
-
-	var dim := ColorRect.new()
-	dim.size = vp
-	dim.color = Color(0.0, 0.0, 0.0, 0.0)
-	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(dim)
-
-	var tear := ColorRect.new()
-	tear.color = Color(1.0, 0.8, 0.4, 0.5)
-	tear.size = Vector2(vp.x, 6.0)
-	tear.position = Vector2(0.0, -12.0)
-	tear.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(tear)
-
-	var lbl := Label.new()
-	lbl.size = vp
-	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	var idx: int = TaskGen.get_stage_index(new_mode)
-	lbl.text = "ЭТАП %d — %s" % [idx, Meta.STAGE_LABELS[idx - 1]]
-	if _terminal_font_bold != null:
-		lbl.add_theme_font_override("font", _terminal_font_bold)
-	lbl.add_theme_font_size_override("font_size", 52)
-	lbl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.45, 1.0))
-	lbl.modulate.a = 0.0
-	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(lbl)
-
-	var tw := create_tween()
-	tw.set_parallel(true)
-	tw.tween_property(dim, "color:a", 0.85, 0.08)
-	# Появление имени — ступенчатое (три «такта» квантования), как строка
-	# на ЭМТ-экране: плавное.fade сюда не подходит по стилю.
-	tw.tween_method(func(v: float) -> void:
-		lbl.modulate.a = snappedf(v * 3.0, 1.0) / 3.0, 0.0, 1.0, 0.15)
-	tw.tween_property(tear, "position:y", vp.y + 12.0, 0.32) \
-		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
-	tw.chain().tween_interval(0.32)
-	tw.set_parallel(true)
-	tw.tween_property(dim, "color:a", 0.0, 0.3)
-	tw.tween_property(lbl, "modulate:a", 0.0, 0.3)
-	tw.chain().tween_callback(func() -> void:
-		if is_instance_valid(layer):
-			layer.queue_free()
-		if _transition_layer == layer:
-			_transition_layer = null)
-
-
 func _trigger_correct_shake() -> void:
 	if _margin == null or not is_instance_valid(_margin):
 		return
@@ -1241,7 +1271,8 @@ func show_next_item() -> void:
 		errors_in_stage = 0
 		_music.play_for_mode(mode)
 		_popup.show_stage(new_mode, _format_answer_keys())
-		_play_stage_transition(new_mode)
+		if new_mode == "master":
+			_flash_master_intro()
 		# Бонус времени за переход на новый этап (один раз на этап).
 		var threshold: int = STAGE_BONUSES.get(new_mode, 0)
 		if threshold > 0 and combo >= threshold and not _stage_bonus_given.has(threshold):
@@ -1265,7 +1296,7 @@ func show_next_item() -> void:
 		order_index = (order_index + 1) % QUADRANT_ORDER.size()
 
 	display_item(item, quad_index)
-	_popup.show_modifier_hint(str(item.get("submode", mode)), combo)
+	_flash_new_modifiers(str(item.get("submode", mode)), combo)
 
 
 # ---------- Обновление верхних полосок ----------
@@ -1419,10 +1450,6 @@ func start_game(initial_combo: int = -1, debug: bool = false) -> void:
 	if not debug and not _meta.stage_owned(TaskGen.get_main_mode(initial_combo)):
 		initial_combo = 0
 
-	if is_instance_valid(_transition_layer):
-		_transition_layer.queue_free()
-		_transition_layer = null
-
 	countdown_timer.stop()
 	garbage_timer.stop()
 	countdown_timer.paused = false
@@ -1454,8 +1481,11 @@ func start_game(initial_combo: int = -1, debug: bool = false) -> void:
 
 	# Подсказки: при старте с высоким комбо (F3) пропущенные модификаторы
 	# не показываем, зато сразу даём попап правил текущего этапа.
-	_popup.start_run(initial_combo)
+	_popup.start_run()
+	_reset_mod_flashes(initial_combo)
 	_popup.show_stage(mode, _format_answer_keys())
+	if mode == "master":
+		_flash_master_intro()
 
 	update_timer_display()
 	update_combo_display()

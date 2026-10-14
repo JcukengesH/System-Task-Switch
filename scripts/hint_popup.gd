@@ -1,57 +1,20 @@
 class_name HintPopup
 extends RefCounted
-# Попапы-подсказки в стиле «терминальное окно»: появляются по центру, не
-# перекрывают символы в квадрантах и не принимают ввод (mouse_filter = IGNORE
-# у всех узлов). Правила этапа висят до нескольких нажатий ответа, подсказка
-# модификатора — несколько секунд.
-# main.gd: build(parent) в _ready; далее show_stage / show_modifier_hint /
-# on_answer_press / tick / hide_popup / start_run.
-
-# Имена модификаторов для заголовка попапа.
-const MOD_NAMES := {
-	"randomQuadrant": "СЛУЧАЙНЫЙ УГОЛ",
-	"flip": "ПЕРЕВОРОТ СИМВОЛА",
-	"inverse": "ИНВЕРСИЯ ОТВЕТА",
-	"garbage": "СБОЙ СИСТЕМЫ",
-	"missingEdge": "ПРОПУЩЕННАЯ ГРАНЬ",
-	"mathExpression": "МАТЕМАТИЧЕСКИЙ ПРИМЕР",
-	"twoShapes": "ДВЕ ФИГУРЫ",
-	"shuffle": "ПЕРЕМЕШАННЫЕ БУКВЫ",
-}
-
-# Краткая инструкция «как действовать» при включении модификатора.
-const MOD_HINTS := {
-	"letters": {
-		"randomQuadrant": "ЗАДАНИЕ ТЕПЕРЬ ПОЯВЛЯЕТСЯ\nВ СЛУЧАЙНОМ УГЛУ. ПРАВИЛА ТЕ ЖЕ",
-		"flip": "СИМВОЛ МОЖЕТ БЫТЬ ПЕРЕВЁРНУТ\nНА ОТВЕТ ЭТО НЕ ВЛИЯЕТ",
-		"inverse": "ЖИРНЫЙ СИМВОЛ = ОТВЕТ НАОБОРОТ\n[1] <-> [2]",
-		"garbage": "НА ЭКРАНЕ @ # $ % ?\nНЕ ЖМИ НИЧЕГО — ПОДОЖДИ СЕКУНДУ",
-	},
-	"shapes": {
-		"missingEdge": "У ФИГУРЫ МОЖЕТ НЕ ХВАТАТЬ ГРАНИ\nСЧИТАЙ ВИДИМЫЕ",
-		"mathExpression": "ВМЕСТО ЦИФРЫ — ПРИМЕР (5+3)\nСНАЧАЛА ПОСЧИТАЙ ЕГО",
-		"twoShapes": "ДВЕ ФИГУРЫ РЯДОМ\nСЧИТАЙ СУММУ ИХ ГРАНЕЙ",
-		"garbage": "НА ЭКРАНЕ @ # $ % ?\nНЕ ЖМИ НИЧЕГО — ПОДОЖДИ СЕКУНДУ",
-	},
-	"stroop": {
-		"inverse": "ЖИРНОЕ СЛОВО = ОТВЕТ НАОБОРОТ\n[1] <-> [2]",
-		"flip": "СЛОВО МОЖЕТ БЫТЬ ПЕРЕВЁРНУТО\nНА ОТВЕТ ЭТО НЕ ВЛИЯЕТ",
-		"shuffle": "БУКВЫ В СЛОВАХ ПЕРЕМЕШАНЫ (ЙСИНI)\nСРАВНИВАЙ ЦВЕТ С НАЗВАНИЕМ КАК ЕСТЬ",
-		"garbage": "НА ЭКРАНЕ @ # $ % ?\nНЕ ЖМИ НИЧЕГО — ПОДОЖДИ СЕКУНДУ",
-	},
-}
+# Попап-подсказка в стиле «терминальное окно»: появляется по центру, не
+# перекрывает символы в квадрантах и не принимает ввод (mouse_filter = IGNORE
+# у всех узлов). Правила этапа висят до нескольких нажатий ответа.
+# Включения модификаторов объявляет НЕ попап, а полноэкранный баннер в
+# main.gd (flash_announcements) — по принципу большой цифры ошибки.
+# main.gd: build(parent) в _ready; далее show_stage / on_answer_press /
+# hide_popup / start_run.
 
 const MODE_PRESSURES := 3   # попап правил висит до 3-х нажатий
-const HINT_SECONDS := 5.0   # попап модификатора висит 5 секунд
 
 var _panel: PanelContainer
 var _title: Label
 var _rule: Label
 var _keys: Label
-var _fade: Tween
-var _presses: int = 0     # >0: попап висит до N нажатий ответа
-var _time: float = 0.0    # >0: попап висит N секунд
-var _hinted: Dictionary = {}  # уже показанные модификаторы за партию
+var _presses: int = 0       # >0: попап висит до N нажатий ответа
 
 
 # Создаёт панель попапа и вешает её на parent (порядок в дереве = поверх игры).
@@ -109,32 +72,11 @@ func build(parent: Node) -> void:
 func show_stage(mode: String, keys_line: String) -> void:
 	var idx := clampi(TaskGen.get_stage_index(mode), 1, TerminalScreen.STAGE_NAMES.size())
 	_show("ЭТАП %d — %s" % [idx, TerminalScreen.STAGE_NAMES[idx - 1]],
-		_rule_text(mode), keys_line, MODE_PRESSURES, 0.0)
+		_rule_text(mode), keys_line, MODE_PRESSURES)
 
 
-# Первый переход порога модификатора за партию — одночасовое напоминание.
-func show_modifier_hint(submode: String, combo: int) -> void:
-	var thresholds: Dictionary = TaskGen.MOD_THRESHOLDS.get(submode, {})
-	var hints: Dictionary = MOD_HINTS.get(submode, {})
-	for key in thresholds:
-		var tag := str(submode) + "/" + str(key)
-		if _hinted.has(tag):
-			continue
-		if combo >= int(thresholds[key]):
-			_hinted[tag] = true
-			_show("МОДИФИКАТОР: " + str(MOD_NAMES.get(key, key)),
-				str(hints.get(key, "")), "", 0, HINT_SECONDS)
-			return
-
-
-# Новый забег: сброс показанных подсказок с предпометкой уже пройденных
-# порогов (F3-старт с высоким комбо не должен сыпать подсказками подряд).
-func start_run(upto_combo: int) -> void:
-	_hinted = {}
-	for submode in TaskGen.MOD_THRESHOLDS:
-		for key in TaskGen.MOD_THRESHOLDS[submode]:
-			if upto_combo >= int(TaskGen.MOD_THRESHOLDS[submode][key]):
-				_hinted[str(submode) + "/" + str(key)] = true
+# Новый забег: снять попап правил предыдущего (баннеры модификаторов — в main.gd).
+func start_run() -> void:
 	hide_popup()
 
 
@@ -145,27 +87,16 @@ func on_answer_press() -> void:
 			hide_popup()
 
 
-func tick(delta: float, paused: bool) -> void:
-	# Таймер подсказки-модификатора (на паузе не тратится).
-	if _time > 0.0 and not paused:
-		_time -= delta
-		if _time <= 0.0:
-			hide_popup()
-
-
 func hide_popup() -> void:
 	_presses = 0
-	_time = 0.0
 	if _panel == null or not is_instance_valid(_panel) or not _panel.visible:
 		return
-	if _fade and _fade.is_valid():
-		_fade.kill()
 	# Дискретно: исчезает сразу, без угасания.
 	_panel.modulate = Color(1, 1, 1, 1)
 	_panel.visible = false
 
 
-func _show(title: String, rule: String, keys_line: String, presses: int, seconds: float) -> void:
+func _show(title: String, rule: String, keys_line: String, presses: int) -> void:
 	if _panel == null or not is_instance_valid(_panel):
 		return
 	_title.text = title
@@ -175,9 +106,8 @@ func _show(title: String, rule: String, keys_line: String, presses: int, seconds
 	if has_keys:
 		_keys.text = keys_line
 	_presses = presses
-	_time = seconds
 	_panel.visible = true
-	# Аутентичный стиль: попап не проявывается фейдом — он либо есть, либо нет,
+	# Аутентичный стиль: попап не проявляется фейдом — он либо есть, либо нет,
 	# как напечатанная строка на терминале.
 	_panel.modulate = Color(1, 1, 1, 1)
 
