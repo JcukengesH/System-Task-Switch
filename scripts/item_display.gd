@@ -220,6 +220,8 @@ func _set_ghost(v: float) -> void:
 			_ghost_label.add_theme_color_override("font_color",
 				Color(1.0, lerpf(0.55, 1.0, v), lerpf(0.12, 0.95, v), v * 0.5))
 			_ghost_label.visible = true
+		# TEXT-шлейф — отдельный Label, перерисовка квадранта не нужна.
+		return
 	# Фигуры шлейфа живут в _draw — просим перерисовку на каждый кадр твина.
 	queue_redraw()
 
