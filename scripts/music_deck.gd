@@ -71,13 +71,24 @@ func play_for_mode(mode: String) -> void:
 
 
 # Ползунка громкости музыки 0..1 -> dB (общая кривая для intro/loop).
+# Отдача 11: музыка чуть тише базовой громкости микса, чтобы SFX читались.
+const VOLUME_TRIM_DB := -3.0
+
+
 func set_volume(v: float) -> void:
 	var c: float = clampf(v, 0.0, 1.0)
-	var db: float = -80.0 if c <= 0.001 else linear_to_db(c)
+	var db: float = -80.0 if c <= 0.001 else linear_to_db(c) + VOLUME_TRIM_DB
 	if _intro_player:
 		_intro_player.volume_db = db
 	if _loop_player:
 		_loop_player.volume_db = db
+
+
+func stop_all() -> void:
+	if _intro_player != null and _intro_player.playing:
+		_intro_player.stop()
+	if _loop_player != null and _loop_player.playing:
+		_loop_player.stop()
 
 
 func _on_intro_finished() -> void:

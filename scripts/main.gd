@@ -13,6 +13,11 @@ const EFFECT_MAX := 1.0
 const EFFECT_COMBO_CAP := 300.0
 const EFFECT_RISE_SPEED := 1.5
 const EFFECT_FALL_SPEED := 1.2
+# Музыкальный слой искажений (music_effect в шейдере): суммарная «жёсткость»
+# огибающих спектра. Поднимается быстро на ударах, сползает медленно.
+const MUSIC_EFFECT_MAX := 1.3
+const MUSIC_RISE_SPEED := 4.0
+const MUSIC_FALL_SPEED := 1.6
 const ANSWER_FEEDBACK_DELAY := 0.10
 # Окно молчания после старта забега: клик-рестарт (или его второй такт
 # двойного клика) не должен превращаться в ответ на первом символе.
@@ -111,6 +116,8 @@ var _popup := HintPopup.new()
 
 var _effect_current: float = EFFECT_MIN
 var _effect_target: float = EFFECT_MIN
+var _music_effect_current: float = 0.0
+var _music_effect_target: float = 0.0
 var _margin: Control
 var _shake_tween: Tween
 var _answer_locked: bool = false
@@ -317,9 +324,11 @@ func _tick_vu(delta: float) -> void:
 		return
 	_vu_accum = 0.0
 	var b: float = _fx.bass if _vu_live else 0.0
+	var l: float = _fx.lowmid if _vu_live else 0.0
 	var m: float = _fx.mid if _vu_live else 0.0
+	var h: float = _fx.highmid if _vu_live else 0.0
 	var t: float = _fx.treble if _vu_live else 0.0
-	vu_label.text = "B%s M%s T%s" % [_vu_bars(b), _vu_bars(m), _vu_bars(t)]
+	vu_label.text = "B%s L%s M%s H%s T%s" % [_vu_bars(b), _vu_bars(l), _vu_bars(m), _vu_bars(h), _vu_bars(t)]
 
 
 func _vu_bars(v: float) -> String:
@@ -656,11 +665,28 @@ func _quit_with_sound() -> void:
 		_current_screen.queue_free()
 		_current_screen = null
 	SFX.shutdown()
-	var wait: float = SFX.shutdown_length()
+	# Слышен только «щелчок» выключения: полный хвост ShutDown.ogg ждать
+	# незачем (фидбек: игра закрывалась несколько секунд). Ставим крест на
+	# аудио и выходим через 0.6 c.
+	var wait: float = minf(SFX.shutdown_length(), 0.6)
 	if wait <= 0.0:
-		wait = 1.0
+		wait = 0.4
 	await get_tree().create_timer(wait).timeout
+	_stop_all_audio()
 	get_tree().quit()
+
+
+func _stop_all_audio() -> void:
+	SFX.stop_all()
+	_music.stop_all()
+
+
+func _notification(what: int) -> void:
+	# Крестик окна / Alt+F4: гасим звук до выхода, иначе закрытие висит,
+	# пока аудио-драйвер досылает буферы (гул БП играл в цикле).
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_stop_all_audio()
+		get_tree().quit()
 
 
 func _start_game_from_menu() -> void:
@@ -971,6 +997,8 @@ func _apply_music_fx_setting() -> void:
 			q.set_pulse(0.0)
 
 func _update_effect_scale(delta: float) -> void:
+	# Слой «база»: геометрия и свет CRT (бочка, виньетка, скан-линии, glow)
+	# растут только от комбо — изгиб экрана на музыку не реагирует.
 	var target: float = EFFECT_MIN
 	if current_state == State.GAME:
 		if combo <= int(EFFECT_COMBO_CAP):
@@ -981,15 +1009,23 @@ func _update_effect_scale(delta: float) -> void:
 			# 300..400 : EFFECT_MAX .. EFFECT_MASTER_MAX
 			var t2: float = clampf(float(combo - int(EFFECT_COMBO_CAP)) / 100.0, 0.0, 1.0)
 			target = lerpf(EFFECT_MAX, EFFECT_MASTER_MAX, t2)
-	# Гибрид: искажения растут не только от комбо, но и от музыки — бас и
-	# верха «тянут» картинку к аналоговым помехам на пиках (в тишине — чисто).
-	if current_state == State.GAME and music_fx_enabled:
-		target += _fx.bass * 0.15 + _fx.treble * 0.08
-	_effect_target = clampf(target, 0.0, EFFECT_MASTER_MAX)
+	_effect_target = target
 	var speed: float = EFFECT_RISE_SPEED if _effect_target > _effect_current else EFFECT_FALL_SPEED
 	_effect_current = move_toward(_effect_current, _effect_target, speed * delta)
+
+	# Слой «музыка»: суммарная жёсткость пяти огибающих + beat. Только он
+	# разгоняет срывы/зерно/вспышки в шейдере; в тишине плавно гаснет в 0.
+	var mt: float = 0.0
+	if current_state == State.GAME and music_fx_enabled:
+		mt = _fx.bass * 0.7 + _fx.lowmid * 0.45 + _fx.mid * 0.3 \
+			+ _fx.highmid * 0.5 + _fx.treble * 0.6 + _fx.beat * 0.8
+	_music_effect_target = clampf(mt, 0.0, MUSIC_EFFECT_MAX)
+	var mspeed: float = MUSIC_RISE_SPEED if _music_effect_target > _music_effect_current else MUSIC_FALL_SPEED
+	_music_effect_current = move_toward(_music_effect_current, _music_effect_target, mspeed * delta)
+
 	if _crt_material:
-		_crt_material.set_shader_parameter("effect_scale", _effect_current)
+		_crt_material.set_shader_parameter("base_effect", _effect_current)
+		_crt_material.set_shader_parameter("music_effect", _music_effect_current)
 
 
 func _trigger_correct_shake() -> void:

@@ -8,7 +8,9 @@ const BOOTING_FILE := "booting.ogg"
 const SHUTDOWN_FILE := "ShutDown.ogg"
 
 const POOL_SIZE := 6
-const VOLUME_DB := -6.0
+# Отдача 11: SFX были на -6 дБ и тонули в музыке. База теперь 0 дБ,
+# пишущий «бип» терминала поднят до -10, гул БП оставлен фоном.
+const VOLUME_DB := 0.0
 
 var _pool: Array[AudioStreamPlayer] = []
 var _pool_index: int = 0
@@ -25,8 +27,8 @@ var _last_err: int = -1
 # «Аутентичный стиль»: низкий гул блока питания + ступенчатый дисплейный бип.
 # Оба просятся процедурно (AudioStreamWAV в памяти) — не тащим бинарные
 # ассеты в репозиторий и не зависим от импортёра.
-const HUM_DB := -30.0
-const BEEP_DB := -16.0
+const HUM_DB := -33.0
+const BEEP_DB := -10.0
 var _hum_player: AudioStreamPlayer
 var _beep_player: AudioStreamPlayer
 
@@ -197,3 +199,15 @@ func shutdown_length() -> float:
 
 func shutdown() -> void:
 	_play(_shutdown)
+
+
+# Мгновенно гасит весь вывод: пул, гул и бип. Нужен, чтобы закрытие
+# окна не ждало досылки аудио-буферов (отдача: «игра долго закрывается»).
+func stop_all() -> void:
+	for p in _pool:
+		if p.playing:
+			p.stop()
+	if _hum_player != null and _hum_player.playing:
+		_hum_player.stop()
+	if _beep_player != null and _beep_player.playing:
+		_beep_player.stop()

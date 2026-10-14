@@ -2,34 +2,48 @@ class_name SpectrumFx
 extends RefCounted
 # Аудио-реактивная прослойка CRT-шейдера: спектр Master-шины -> адаптивная
 # нормировка min/max по скользящему окну -> быстрые/медленные огибающие ->
-# beat-punch -> параметры шейдера (music_bass / music_mid / music_treble /
-# music_pulse). Про игру ничего не знает: main.gd передаёт ShaderMaterial
-# в update() и читает публичное поле pulse для квадрантов.
+# 5 каналов (bass/lowmid/mid/highmid/treble) + beat + texture -> параметры
+# шейдера. Про игру ничего не знает: main.gd передаёт ShaderMaterial в
+# update() и читает публичные поля (pulse — для квадрантов, каналы — для VU).
 
 # Скользящее окно истории для адаптивной нормировки.
 const HISTORY_LEN := 60
 
+# Каналы спектра: имя -> [частота низа, частота верха]. 5 полос вместо трёх
+# — графика реагирует детальнее (низкие «гудят», высокие «сыпят» по-разному).
+const BANDS := {
+	"bass":    [30.0, 150.0],
+	"lowmid":  [150.0, 400.0],
+	"mid":     [400.0, 1200.0],
+	"highmid": [1200.0, 3500.0],
+	"treble":  [3500.0, 12000.0],
+}
+
+# Кривая отклика транзиента: вместо жёсткого clamp(x*4) (только 0 или 1) —
+# мягкое насыщение x/(x+0.6)*1.6: средние значения живут, пики не бьют в потолок.
+const TRANS_GAIN := 2.5
+const TRANS_SOFT := 0.6
+const TRANS_NORM := 1.6
+
 # Beat-punch (0..1) — main.gd пульсирует им активный квадрант.
 var pulse: float = 0.0
-# Огибающие полос спектра (0..1) — публичны для VU-метра HUD'а.
+# Атака баса (фронт удара) и «сыпучесть» верхов — отдельные каналы реакции.
+var beat: float = 0.0
+var hiss: float = 0.0
+# Огибающие полос (0..1) — публичны для VU-метра HUD'а и слоя искажений.
 var bass: float = 0.0
+var lowmid: float = 0.0
 var mid: float = 0.0
+var highmid: float = 0.0
 var treble: float = 0.0
 
 var _spectrum: AudioEffectSpectrumAnalyzerInstance
 
-# История спектра: монотонные деки min/max по скользящему окну HISTORY_LEN
-# (деки хранят «логические» инкрементальные индексы, кольцевой буфер не нужен).
-var _bass_state: Dictionary = {}
-var _mid_state: Dictionary = {}
-var _treble_state: Dictionary = {}
+# История спектра по каналам: монотонные деки min/max по скользящему окну
+# HISTORY_LEN (деки хранят «логические» инкрементальные индексы, кольцевой
+# буфер не нужен).
+var _bands: Dictionary = {}
 var _hist_idx: int = 0
-var _bass_fast: float = 0.0
-var _bass_slow: float = 0.0
-var _mid_fast: float = 0.0
-var _mid_slow: float = 0.0
-var _treble_fast: float = 0.0
-var _treble_slow: float = 0.0
 
 # Кэш последних отправленных в шейдер значений: не дёргать
 # set_shader_parameter каждый кадр одинаковыми числами.
@@ -38,9 +52,11 @@ var _shader_cache: Dictionary = {}
 
 func _init() -> void:
 	# Инициализация истории спектра: только деки min/max (кольцевых буферов нет).
-	_bass_state = {"min_idx": [], "min_val": [], "max_idx": [], "max_val": []}
-	_mid_state = {"min_idx": [], "min_val": [], "max_idx": [], "max_val": []}
-	_treble_state = {"min_idx": [], "min_val": [], "max_idx": [], "max_val": []}
+	for band in BANDS:
+		_bands[band] = {
+			"min_idx": [], "min_val": [], "max_idx": [], "max_val": [],
+			"fast": 0.0, "slow": 0.0, "prev_fast": 0.0, "value": 0.0,
+		}
 	_hist_idx = 0
 
 
@@ -70,47 +86,54 @@ func update(delta: float, material: ShaderMaterial) -> bool:
 	if _spectrum == null or material == null:
 		return false
 
-	var bass_raw: float   = _spectrum.get_magnitude_for_frequency_range(30.0, 200.0).length()
-	var mid_raw: float    = _spectrum.get_magnitude_for_frequency_range(200.0, 2000.0).length()
-	var treble_raw: float = _spectrum.get_magnitude_for_frequency_range(4000.0, 12000.0).length()
+	var fast_rate: float = 32.0
+	var slow_rate: float = 2.5
 
-	var bass_db: float   = _to_db(bass_raw)
-	var mid_db: float    = _to_db(mid_raw)
-	var treble_db: float = _to_db(treble_raw)
+	for band in BANDS:
+		var range_hz: Array = BANDS[band]
+		var raw: float = _spectrum.get_magnitude_for_frequency_range(
+			range_hz[0], range_hz[1]).length()
+		var normed: float = _adaptive_norm(_to_db(raw), _bands[band])
+		var st: Dictionary = _bands[band]
+		st["prev_fast"] = st["fast"]
+		st["fast"] = _env(st["fast"], normed, delta, fast_rate)
+		st["slow"] = _env(st["slow"], normed, delta, slow_rate)
+		var trans: float = clampf((st["fast"] - st["slow"]) * TRANS_GAIN, 0.0, 1.0)
+		st["value"] = _soft_curve(trans)
 
-	var bass_n: float   = _adaptive_norm(bass_db, _bass_state)
-	var mid_n: float    = _adaptive_norm(mid_db, _mid_state)
-	var treble_n: float = _adaptive_norm(treble_db, _treble_state)
+	bass = _bands["bass"]["value"]
+	lowmid = _bands["lowmid"]["value"]
+	mid = _bands["mid"]["value"]
+	highmid = _bands["highmid"]["value"]
+	treble = _bands["treble"]["value"]
 
-	var fast_rate: float = 45.0
-	var slow_rate: float = 2.0
-	_bass_fast   = _env(_bass_fast,   bass_n,   delta, fast_rate)
-	_bass_slow   = _env(_bass_slow,   bass_n,   delta, slow_rate)
-	_mid_fast    = _env(_mid_fast,    mid_n,    delta, fast_rate)
-	_mid_slow    = _env(_mid_slow,    mid_n,    delta, slow_rate)
-	_treble_fast = _env(_treble_fast, treble_n, delta, fast_rate)
-	_treble_slow = _env(_treble_slow, treble_n, delta, slow_rate)
+	# Beat — фронт атаки баса (рост быстрой огибающей). Короткий, колкий.
+	var bass_onset: float = clampf(
+		(_bands["bass"]["fast"] - float(_bands["bass"]["prev_fast"])) * 28.0, 0.0, 1.0)
+	beat = maxf(bass_onset, beat - delta * 5.0)
 
-	var bass_trans: float   = clampf((_bass_fast - _bass_slow) * 4.0,     0.0, 1.0)
-	var mid_trans: float    = clampf((_mid_fast - _mid_slow) * 4.0,      0.0, 1.0)
-	var treble_trans: float = clampf((_treble_fast - _treble_slow) * 4.0, 0.0, 1.0)
+	# Hiss — дрожание верхов (тарелки/шум): модуль быстрых колебаний treble.
+	var treble_fluct: float = clampf(
+		absf(_bands["treble"]["fast"] - float(_bands["treble"]["prev_fast"])) * 20.0, 0.0, 1.0)
+	hiss = maxf(treble_fluct, hiss - delta * 3.0)
 
-	# Публичные копии — для VU-метра в HUD (main.gd читает, не трогая приваты).
-	bass = bass_trans
-	mid = mid_trans
-	treble = treble_trans
-
-	var drive: float = maxf(bass_trans, treble_trans * 0.9)
-	drive = maxf(drive, mid_trans * 0.7)
+	var drive: float = maxf(bass, treble * 0.9)
+	drive = maxf(drive, lowmid * 0.85)
+	drive = maxf(drive, highmid * 0.8)
+	drive = maxf(drive, mid * 0.7)
 	if drive > pulse:
 		pulse = drive
 	else:
 		pulse = maxf(0.0, pulse - delta * 3.5)
 
-	_set_param_cached(material, "music_bass",   bass_trans)
-	_set_param_cached(material, "music_mid",    mid_trans)
-	_set_param_cached(material, "music_treble", treble_trans)
-	_set_param_cached(material, "music_pulse",  pulse)
+	_set_param_cached(material, "music_bass", bass)
+	_set_param_cached(material, "music_lowmid", lowmid)
+	_set_param_cached(material, "music_mid", mid)
+	_set_param_cached(material, "music_highmid", highmid)
+	_set_param_cached(material, "music_treble", treble)
+	_set_param_cached(material, "music_pulse", pulse)
+	_set_param_cached(material, "music_beat", beat)
+	_set_param_cached(material, "music_texture", hiss)
 	return true
 
 
@@ -120,12 +143,24 @@ func update(delta: float, material: ShaderMaterial) -> bool:
 func reset_params(material: ShaderMaterial) -> void:
 	if material == null:
 		return
-	for pname in ["music_bass", "music_mid", "music_treble", "music_pulse"]:
+	for pname in ["music_bass", "music_lowmid", "music_mid", "music_highmid",
+			"music_treble", "music_pulse", "music_beat", "music_texture",
+			"music_effect"]:
 		_shader_cache.erase(pname)
 		material.set_shader_parameter(pname, 0.0)
 	bass = 0.0
+	lowmid = 0.0
 	mid = 0.0
+	highmid = 0.0
 	treble = 0.0
+	beat = 0.0
+	hiss = 0.0
+
+
+func _soft_curve(x: float) -> float:
+	# Плавное насыщение: 0 -> 0, 0.5 -> ~0.73, 1.0 -> 1.0. Середина диапазона
+	# перестаёт «выпрыгивать» в максимум, эффекты читаются как градация.
+	return clampf(x / (x + TRANS_SOFT) * TRANS_NORM, 0.0, 1.0)
 
 
 func _to_db(magnitude: float) -> float:
