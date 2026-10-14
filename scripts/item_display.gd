@@ -19,6 +19,10 @@ var shape_missing_second: bool = false
 
 var content_root: Control
 var label: Label
+# Шлейф TEXT-режима — точный дубликат: второй Label строго за основным.
+# Godot сам ставит глиф на ту же базовую линию, что и чёткий знак, — ручным
+# расчётом ascent её не попасть (FontFile к тому же не отдаёт метрики).
+var _ghost_label: Label
 
 var _pulse: float = 0.0
 var _base_scale: Vector2 = Vector2.ONE
@@ -27,10 +31,10 @@ var _press_scale: float = 1.0
 # Текущий цвет глифа — нужен, чтобы вернуть его после инверсионной вспышки.
 var _label_color: Color = Color.WHITE
 var _press_tween: Tween
-# Фосфорный шлейф верного ответа (CRT ghosting): копии самого знака,
-# разъезжающиеся и «остывающие» от бело-горячего к янтарному
-# (_draw_ghost_pass). Снимок содержимого берётся в момент удара
-# (_start_ghost), чтобы новая задача не «перекрашивала» чужой шлейф.
+# Фосфорный шлейф верного ответа (CRT ghosting): точный дубликат самого знака.
+# TEXT — второй Label на той же базовой линии (_ghost_label), SHAPE — утолщённые
+# линии через общий геометр (_draw_ghost_pass). Снимок содержимого берётся в
+# момент удара (_start_ghost), чтобы новая задача не «перекрашивала» чужой шлейф.
 var _ghost_tween: Tween
 var _ghost_value: float = 0.0
 var _gh_mode: int = Mode.NONE
@@ -69,6 +73,20 @@ func _ready() -> void:
 	label.visible = false
 	content_root.add_child(label)
 
+	_ghost_label = Label.new()
+	_ghost_label.name = "GhostLabel"
+	_ghost_label.set_anchors_preset(Control.PRESET_FULL_RECT)
+	# Минус z: дубликат уходит за отрисовку квадранта (рамка, фигуры) и
+	# гарантированно лежит ЗА чётким знаком, а не поверх новой задачи.
+	_ghost_label.z_index = -1
+	_ghost_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_ghost_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_ghost_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_ghost_label.visible = false
+	add_child(_ghost_label)
+	# Перед content_root: шлейф лежит ровно ЗА глифом, а не поверх.
+	move_child(_ghost_label, 0)
+
 	_digit_mark = ColorRect.new()
 	_digit_mark.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_digit_mark.visible = false
@@ -81,6 +99,8 @@ func _ready() -> void:
 func _on_resized() -> void:
 	if content_root:
 		content_root.pivot_offset = size / 2.0
+	if _ghost_label:
+		_ghost_label.pivot_offset = size / 2.0
 	_fit_label_font_size()
 	_place_digit_mark()
 	queue_redraw()
@@ -159,6 +179,15 @@ func _start_ghost() -> void:
 		_gh_font_size = label.get_theme_font_size("font_size")
 		_gh_scale = _base_scale
 		_gh_rot = _base_rotation
+		if _ghost_label:
+			_ghost_label.text = _gh_text
+			if _gh_font != null:
+				_ghost_label.add_theme_font_override("font", _gh_font)
+			_ghost_label.add_theme_font_size_override("font_size", _gh_font_size)
+			_ghost_label.pivot_offset = size / 2.0
+			_ghost_label.scale = _gh_scale
+			_ghost_label.rotation_degrees = _gh_rot
+			_ghost_label.visible = true
 	elif display_mode == Mode.SHAPE:
 		_gh_mode = Mode.SHAPE
 		_gh_sides = shape_sides
@@ -170,6 +199,8 @@ func _start_ghost() -> void:
 		_gh_missing_second = shape_missing_second
 	else:
 		return
+	if _gh_mode != Mode.TEXT and _ghost_label:
+		_ghost_label.visible = false
 	_ghost_value = 1.0
 	if _ghost_tween and _ghost_tween.is_valid():
 		_ghost_tween.kill()
@@ -181,7 +212,15 @@ func _start_ghost() -> void:
 
 func _set_ghost(v: float) -> void:
 	_ghost_value = v
-	# Шлейф рисуется в _draw — просим перерисовку на каждый кадр твина.
+	if _gh_mode == Mode.TEXT and _ghost_label != null:
+		if v <= 0.02:
+			_ghost_label.visible = false
+		else:
+			# Бело-горячий -> янтарный, остывает вместе с прозрачностью.
+			_ghost_label.add_theme_color_override("font_color",
+				Color(1.0, lerpf(0.55, 1.0, v), lerpf(0.12, 0.95, v), v * 0.5))
+			_ghost_label.visible = true
+	# Фигуры шлейфа живут в _draw — просим перерисовку на каждый кадр твина.
 	queue_redraw()
 
 
@@ -302,50 +341,18 @@ func _draw() -> void:
 		_draw_shapes()
 
 
-# Фосфорный шлейф: копии самого знака (не пятно-ореол), разъезжающиеся
-# и бледнеющие. При остывании копии «расфокусировываются» (растёт радиус),
-# цвет уходит из бело-горячего в янтарный — как линии фигур выше.
+# Фосфорный шлейф фигур: утолщённые полупрозрачные линии, расходящиеся при
+# остывании. TEXT-режим не трогаем — там шлейф делает _ghost_label.
 func _draw_ghost_pass() -> void:
-	if _ghost_value <= 0.02 or _gh_mode == Mode.NONE:
+	if _ghost_value <= 0.02 or _gh_mode != Mode.SHAPE:
 		return
 	var g: float = _ghost_value
 	var col := Color(1.0, lerpf(0.55, 1.0, g), lerpf(0.12, 0.95, g))
 	var rad: float = 2.0 + (1.0 - g) * 8.0
-	if _gh_mode == Mode.TEXT:
-		# Текст живёт в content_root с флипом/поворотом — шлейф повторяет
-		# тот же преобразующий матричный порядок (T(c) R S T(-c)).
-		var xf := Transform2D.IDENTITY
-		xf = xf.translated(size / 2.0)
-		if _gh_rot != 0.0:
-			xf = xf.rotated(deg_to_rad(_gh_rot))
-		if _gh_scale != Vector2.ONE:
-			xf = xf.scaled(_gh_scale)
-		xf = xf.translated(-size / 2.0)
-		draw_set_transform_matrix(xf)
-		var font: Font = _gh_font if _gh_font != null else ThemeDB.fallback_font
-		var ts: Vector2 = font.get_string_size(_gh_text,
-			HORIZONTAL_ALIGNMENT_CENTER, -1, _gh_font_size)
-		# Базовая линия ровно как у Label: строковый блок по вертикали
-		# центрирован, текст стоит на get_ascent. Для FontFile нет уверенности,
-		# что get_line_height/get_ascent есть, поэтому используем ts.y, который
-		# font.get_string_size гарантированно возвращает.
-		var line_h: float = ts.y
-		var base := Vector2(size.x / 2.0 - ts.x / 2.0,
-			(size.y - line_h) / 2.0 + line_h * 0.75)
-		var dirs := [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1),
-				Vector2(0.71, 0.71), Vector2(-0.71, 0.71),
-				Vector2(0.71, -0.71), Vector2(-0.71, -0.71)]
-		for d in dirs:
-			draw_string(font, base + d * rad, _gh_text,
-				HORIZONTAL_ALIGNMENT_CENTER, -1, _gh_font_size, Color(col, g * 0.20))
-		draw_string(font, base, _gh_text,
-			HORIZONTAL_ALIGNMENT_CENTER, -1, _gh_font_size, Color(col, g * 0.38))
-		draw_set_transform_matrix(Transform2D.IDENTITY)
-	else:
-		# Фигуры рисуются на самом квадранте без флипа — шлейф тоже.
-		_shape_geometry(Color(col, g * 0.22), 4.0 + rad * 1.8,
-			_gh_sides, _gh_second_sides, _gh_digit_text,
-			_gh_show_digit, _gh_digit_in_first, _gh_missing_first, _gh_missing_second)
+	# Фигуры рисуются на самом квадранте без флипа — шлейф тоже.
+	_shape_geometry(Color(col, g * 0.22), 4.0 + rad * 1.8,
+		_gh_sides, _gh_second_sides, _gh_digit_text,
+		_gh_show_digit, _gh_digit_in_first, _gh_missing_first, _gh_missing_second)
 
 
 func _fit_label_font_size() -> void:

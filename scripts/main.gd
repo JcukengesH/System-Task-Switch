@@ -15,11 +15,28 @@ const EFFECT_RISE_SPEED := 1.5
 const EFFECT_FALL_SPEED := 1.2
 # Музыкальный слой искажений (music_effect в шейдере): суммарная «жёсткость»
 # огибающих спектра. Поднимается на ударах, сползает медленно. Умножается на
-# fx_reactivity (слайдер в CONFIG) — по умолчанию приглушён, чтобы картинка
-# не «дрожала» от каждого бита.
-const MUSIC_EFFECT_MAX := 1.3
+# мягкую кривую fx_reactivity (pow 1.5): 30% слайдера дают ~16% «дёрганья»,
+# 100% — прежнюю полноту. Какой артефакт вообще имеет право жить — решает
+# стадийный слой ниже (и шейдерные fx_*, и пульс рамок).
+const MUSIC_EFFECT_MAX := 1.0
 const MUSIC_RISE_SPEED := 2.8
 const MUSIC_FALL_SPEED := 1.6
+
+# Стадии «сходящей с ума системы» (см. fx_scan/fx_glitch/fx_madness в
+# crt.gdshader). Индекс = этап разблокировки: 0 HEX — пульс рамок (единственный
+# эффект этапа), 1 POLYMETRY — дыхание скан-линий/виньетки/glow, 2 STROOPTEST —
+# микро-срывы и RGB-расщепление, 3 THE SEQUENCE — полное безумие. На своём
+# этапе слой растёт логарифмически по комбо от seed до max; при переходе
+# дальше — плавно откатывается к default и слегка подрастает. Геометрия CRT
+# (base_effect) не тронута: бочка экрана — это терминал, она всегда.
+const FX_STAGE_LO := [0, 100, 200, 300]
+const FX_STAGE_HI := [100, 200, 300, 400]
+const FX_LAYER_SEED := [0.4, 0.12, 0.12, 0.12]
+const FX_LAYER_DEFAULT := [0.55, 0.35, 0.3, 0.45]
+const FX_LAYER_MAX := [1.0, 0.7, 0.85, 1.0]
+const FX_LOG_K := 5.0
+const FX_RISE_SPEED := 0.9
+const FX_FALL_SPEED := 0.8
 const ANSWER_FEEDBACK_DELAY := 0.10
 # Окно молчания после старта забега: клик-рестарт (или его второй такт
 # двойного клика) не должен превращаться в ответ на первом символе.
@@ -87,7 +104,7 @@ var binding_answer2: InputEvent = null
 # Настройки пользователя (сохраняются в SETTINGS_PATH).
 var music_volume: float = 0.8      # 0.0..1.0
 var sfx_volume: float = 0.8
-var fx_reactivity: float = 0.6     # «дёрганость» графики от музыки, 0..1
+var fx_reactivity: float = 0.3     # «дёрганость» графики от музыки, 0..1 (debug-слайдер)
 var crt_enabled: bool = true
 var music_fx_enabled: bool = true
 
@@ -121,6 +138,10 @@ var _effect_current: float = EFFECT_MIN
 var _effect_target: float = EFFECT_MIN
 var _music_effect_current: float = 0.0
 var _music_effect_target: float = 0.0
+# Текущие веса стадийных слоёв (пульс/scan/glitch/madness), 0..1.
+var _fx_layers: Array = [0.0, 0.0, 0.0, 0.0]
+# Оверлей анимации смены этапа (живёт ~0.9 с).
+var _transition_layer: CanvasLayer = null
 var _margin: Control
 var _shake_tween: Tween
 var _answer_locked: bool = false
@@ -207,6 +228,7 @@ func _setup_crt_overlay() -> void:
 # ---------- Аудио-реактивный шейдер ----------
 func _process(delta: float) -> void:
 	_update_effect_scale(delta)
+	_update_stage_fx_layers(delta)
 
 	_popup.tick(delta, paused)
 	_tick_vu(delta)
@@ -222,7 +244,9 @@ func _process(delta: float) -> void:
 	if current_state == State.GAME:
 		# Пульс обновляем только когда величина реально изменилась — иначе
 		# set_pulse -> queue_redraw у активного квадранта каждый кадр.
-		var pulse: float = _fx.pulse * (0.4 + 0.6 * fx_reactivity)
+		# Амплитуда: мягкая кривая слайдера × стадийный слой 0 (единственный
+		# эффект первого этапа, потом откатывается к дефолту).
+		var pulse: float = _fx.pulse * (0.4 + 0.6 * _react()) * _fx_layers[0]
 		if absf(pulse - _pulse_sent) > 0.005:
 			_pulse_sent = pulse
 			for q in quadrants:
@@ -877,7 +901,7 @@ func _load_settings() -> void:
 		sfx_volume = clampf(cfg.get_value("audio", "sfx_volume", 0.8), 0.0, 1.0)
 		crt_enabled = cfg.get_value("video", "crt", true)
 		music_fx_enabled = cfg.get_value("video", "music_fx", true)
-		fx_reactivity = clampf(cfg.get_value("video", "reactivity", 0.6), 0.0, 1.0)
+		fx_reactivity = clampf(cfg.get_value("video", "reactivity", 0.3), 0.0, 1.0)
 		_meta.load_from_cfg(cfg)
 
 
@@ -1027,13 +1051,110 @@ func _update_effect_scale(delta: float) -> void:
 	if current_state == State.GAME and music_fx_enabled:
 		mt = _fx.bass * 0.7 + _fx.lowmid * 0.45 + _fx.mid * 0.3 \
 			+ _fx.highmid * 0.5 + _fx.treble * 0.6 + _fx.beat * 0.8
-	_music_effect_target = clampf(mt * fx_reactivity, 0.0, MUSIC_EFFECT_MAX)
+	_music_effect_target = clampf(mt * _react(), 0.0, MUSIC_EFFECT_MAX)
 	var mspeed: float = MUSIC_RISE_SPEED if _music_effect_target > _music_effect_current else MUSIC_FALL_SPEED
 	_music_effect_current = move_toward(_music_effect_current, _music_effect_target, mspeed * delta)
 
 	if _crt_material:
 		_crt_material.set_shader_parameter("base_effect", _effect_current)
 		_crt_material.set_shader_parameter("music_effect", _music_effect_current)
+
+
+# Мягкая кривая слайдера реактивности: малые значения «почти игнорируют»
+# музыку, 100% — вся полнота прежних эффектов. Слайдер — debug-инструмент,
+# в релизе значение замораживается константой.
+func _react() -> float:
+	return pow(fx_reactivity, 1.5)
+
+
+func _fx_stage_index() -> int:
+	return clampi(TaskGen.get_stage_index(mode) - 1, 0, 3)
+
+
+# Стадийные слои безумия: логарифмический рост по комбо внутри текущего этапа,
+# плавный откат сыгранных слоёв к дефолту, обнуление ещё не открытых.
+func _update_stage_fx_layers(delta: float) -> void:
+	var in_game: bool = current_state == State.GAME
+	var sidx: int = _fx_stage_index()
+	var p: float = 0.0
+	if in_game:
+		var lo: float = float(FX_STAGE_LO[sidx])
+		var hi: float = float(FX_STAGE_HI[sidx])
+		p = clampf((float(combo) - lo) / maxf(hi - lo, 1.0), 0.0, 1.0)
+	var t: float = log(1.0 + p * FX_LOG_K) / log(1.0 + FX_LOG_K)
+	for i in 4:
+		var target: float = 0.0
+		if in_game and i < sidx:
+			# Сыгранный слой: дефолт + скромный рост (до 30% диапазона) к концу этапа.
+			target = lerpf(FX_LAYER_DEFAULT[i], FX_LAYER_MAX[i], 0.3 * t)
+		elif in_game and i == sidx:
+			# Текущий фокус этапа: от seed до max логарифмом по прогрессу этапа.
+			target = lerpf(FX_LAYER_SEED[i], FX_LAYER_MAX[i], t)
+		var speed: float = FX_RISE_SPEED if target > _fx_layers[i] else FX_FALL_SPEED
+		_fx_layers[i] = move_toward(_fx_layers[i], target, speed * delta)
+	if _crt_material:
+		_crt_material.set_shader_parameter("fx_scan", _fx_layers[1])
+		_crt_material.set_shader_parameter("fx_glitch", _fx_layers[2])
+		_crt_material.set_shader_parameter("fx_madness", _fx_layers[3])
+
+
+# Короткая «пере-синхронизация терминала» при смене этапа: затемнение,
+# пробегающая полоса-срыв развёртки и имя этапа ~0.9 с. Геймплей не ставится
+# на паузу — попап правил читается сразу под угасающим переходом.
+func _play_stage_transition(new_mode: String) -> void:
+	if is_instance_valid(_transition_layer):
+		_transition_layer.queue_free()
+	var layer := CanvasLayer.new()
+	layer.layer = 90
+	add_child(layer)
+	_transition_layer = layer
+	var vp: Vector2 = get_viewport_rect().size
+
+	var dim := ColorRect.new()
+	dim.size = vp
+	dim.color = Color(0.0, 0.0, 0.0, 0.0)
+	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(dim)
+
+	var tear := ColorRect.new()
+	tear.color = Color(1.0, 0.8, 0.4, 0.5)
+	tear.size = Vector2(vp.x, 6.0)
+	tear.position = Vector2(0.0, -12.0)
+	tear.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(tear)
+
+	var lbl := Label.new()
+	lbl.size = vp
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	var idx: int = TaskGen.get_stage_index(new_mode)
+	lbl.text = "ЭТАП %d — %s" % [idx, Meta.STAGE_LABELS[idx - 1]]
+	if _terminal_font_bold != null:
+		lbl.add_theme_font_override("font", _terminal_font_bold)
+	lbl.add_theme_font_size_override("font_size", 52)
+	lbl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.45, 1.0))
+	lbl.modulate.a = 0.0
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(lbl)
+
+	var tw := create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(dim, "color:a", 0.85, 0.08)
+	# Появление имени — ступенчатое (три «такта» квантования), как строка
+	# на ЭМТ-экране: плавное.fade сюда не подходит по стилю.
+	tw.tween_method(func(v: float) -> void:
+		lbl.modulate.a = snappedf(v * 3.0, 1.0) / 3.0, 0.0, 1.0, 0.15)
+	tw.tween_property(tear, "position:y", vp.y + 12.0, 0.32) \
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.chain().tween_interval(0.32)
+	tw.set_parallel(true)
+	tw.tween_property(dim, "color:a", 0.0, 0.3)
+	tw.tween_property(lbl, "modulate:a", 0.0, 0.3)
+	tw.chain().tween_callback(func() -> void:
+		if is_instance_valid(layer):
+			layer.queue_free()
+		if _transition_layer == layer:
+			_transition_layer = null)
 
 
 func _trigger_correct_shake() -> void:
@@ -1120,6 +1241,7 @@ func show_next_item() -> void:
 		errors_in_stage = 0
 		_music.play_for_mode(mode)
 		_popup.show_stage(new_mode, _format_answer_keys())
+		_play_stage_transition(new_mode)
 		# Бонус времени за переход на новый этап (один раз на этап).
 		var threshold: int = STAGE_BONUSES.get(new_mode, 0)
 		if threshold > 0 and combo >= threshold and not _stage_bonus_given.has(threshold):
@@ -1296,6 +1418,10 @@ func start_game(initial_combo: int = -1, debug: bool = false) -> void:
 	# случай, если высокий комбо придёт из skip/F3-наследия/внешнего вызова.
 	if not debug and not _meta.stage_owned(TaskGen.get_main_mode(initial_combo)):
 		initial_combo = 0
+
+	if is_instance_valid(_transition_layer):
+		_transition_layer.queue_free()
+		_transition_layer = null
 
 	countdown_timer.stop()
 	garbage_timer.stop()

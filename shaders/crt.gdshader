@@ -5,11 +5,21 @@ uniform sampler2D screen_texture : hint_screen_texture, filter_linear;
 // Два слоя силы эффектов (см. main.gd _update_effect_scale):
 // base_effect  — «геометрия и свет» CRT: бочка, FOV, виньетка, скан-линии,
 //                glow, аберрация. Растёт только с комбо — на музыку не
-//                реагирует вовсе.
+//                реагирует вовсе. Бочка — это терминал, она живёт всегда.
 // music_effect — «помехи»: срывы синхронизации, зерно, вспышки. Живёт только
 //                музыкой; в тишине = 0 и картинка чистая.
 uniform float base_effect : hint_range(0.0, 2.0) = 0.15;
 uniform float music_effect : hint_range(0.0, 2.0) = 0.0;
+
+// Стадийные слои «безумия системы» (см. main.gd _update_stage_fx_layers):
+// какой артефакт вообще имеет право шевелиться картинкой. Индекс слоя =
+// этап разблокировки: 1 HEX — артефактов нет (живёт только пульс рамок в
+// GDScript); 2 POLYMETRY — fx_scan (дыхание скан-линий/виньетки/glow);
+// 3 STROOPTEST — fx_glitch (микро-срывы строки и RGB-расщепление);
+// 4 THE SEQUENCE — fx_madness (зерно, ролл, вспышки: полная потеря синхронизации).
+uniform float fx_scan : hint_range(0.0, 1.0) = 0.0;
+uniform float fx_glitch : hint_range(0.0, 1.0) = 0.0;
+uniform float fx_madness : hint_range(0.0, 1.0) = 0.0;
 
 // FOV-подобное искажение (эффект «расширения» картинки).
 uniform float fov_warp : hint_range(0.0, 0.6) = 0.10;
@@ -85,6 +95,9 @@ vec3 glow_at(vec2 uv) {
 void fragment() {
 	float base = base_effect;
 	float mus = music_effect;
+	// Жёсткие артефакты (срывы/расщепление) суммируют глитч-этапы: на
+	// «четвёртом» glitch откатан к дефолту, но madness его усиливает.
+	float hard = fx_glitch + fx_madness;
 
 	// Пиковые гейты каналов: «жестяные» артефакты берём из верха отклика
 	// каждой полосы, чтобы тихие партии не шевелили картинку.
@@ -107,9 +120,9 @@ void fragment() {
 	float band = floor(uv.y * 8.0);
 	// Бас «бьёт» развёртку, beat (фронт удара) добавляет колкость.
 	float punch = clamp(bass_pk + music_beat * 1.4, 0.0, 1.5);
-	uv.x += (hash21(vec2(band, tstep)) - 0.5) * jitter_amount * mus * punch * 2.0;
+	uv.x += (hash21(vec2(band, tstep)) - 0.5) * jitter_amount * mus * punch * 2.0 * hard;
 	// Верхa и шипение уводят вертикалку.
-	uv.y += (hash21(vec2(tstep, 11.0)) - 0.5) * roll_amount * mus
+	uv.y += (hash21(vec2(tstep, 11.0)) - 0.5) * roll_amount * mus * fx_madness
 		* (treb_pk + music_texture * 0.6);
 
 	bool inside = (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0);
@@ -120,8 +133,8 @@ void fragment() {
 		vec2 quv = (floor(uv * grid) + 0.5) / grid;
 		float dist = length(quv - 0.5);
 
-		float glow_mul = 1.0 + music_pulse * music_glow_boost * mus;
-		float aberr_mul = 1.0 + (music_pulse * music_aberration_boost + highmid_pk * 1.5) * mus;
+		float glow_mul = 1.0 + music_pulse * music_glow_boost * mus * fx_scan;
+		float aberr_mul = 1.0 + (music_pulse * music_aberration_boost + highmid_pk * 1.5) * mus * hard;
 
 		vec2 dir = normalize(quv - 0.5 + 1e-6);
 		vec2 off = dir * (aberration * base) * aberr_mul * dist;
@@ -136,13 +149,15 @@ void fragment() {
 		// Виньетку считаем первой — от неё зависит мягкость скан-линий по краям.
 		vec2 vc = quv - 0.5;
 		float vig = clamp(1.0 - dot(vc, vc) * (vignette_strength * base) * 2.0, 0.0, 1.0);
+		// Дыхание краёв на ударах — тоже scan-слой: этап 2+.
+		vig *= 1.0 - fx_scan * mus * music_pulse * 0.18;
 
 		// Скан-линии: плавные (нативные строки), затухают к краям вместе с
 		// виньеткой. Середина/нижняя середина музыки «поджигают» контраст
 		// полос, но только на пиках и только слоем помех.
 		vec2 pixel = quv / SCREEN_PIXEL_SIZE;
 		float scan = sin(pixel.y * 3.14159265) * 0.5 + 0.5;
-		float burn = (mid_pk * 0.9 + lowmid_pk * 0.5) * mus;
+		float burn = (mid_pk * 0.9 + lowmid_pk * 0.5) * mus * fx_scan;
 		col *= mix(1.0, scan, scanline_strength * base * (1.0 + burn) * vig);
 
 		col *= vig;
@@ -151,12 +166,12 @@ void fragment() {
 		// (hiss); в тишине постоянная составляющая почти нулевая.
 		float vrow = floor(quv.y * grid.y);
 		float grain = hash21(vec2(vrow, floor(quv.x * grid.x) + tstep * 97.0)) - 0.5;
-		col += grain * grain_amount * mus * (0.1 + treb_pk * 0.8 + music_texture * 0.9);
+		col += grain * grain_amount * mus * (fx_madness + fx_glitch * 0.25) * (0.1 + treb_pk * 0.8 + music_texture * 0.9);
 
 		col *= 1.0 + sin(TIME * flicker_speed) * (flicker * base);
 		// Доля — ступенчатая вспышка яркости, без плавного «дыхания».
-		col *= 1.0 + step(0.68, music_pulse) * music_flicker_boost * 0.6 * mus;
-		col *= brightness * (1.0 + step(0.8, music_pulse) * music_brightness_boost * 0.3 * mus);
+		col *= 1.0 + step(0.68, music_pulse) * music_flicker_boost * 0.6 * mus * fx_madness;
+		col *= brightness * (1.0 + step(0.8, music_pulse) * music_brightness_boost * 0.3 * mus * fx_madness);
 	}
 
 	COLOR = vec4(col, 1.0);
