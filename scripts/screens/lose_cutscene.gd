@@ -139,9 +139,9 @@ func _update_selection() -> void:
 		if not is_instance_valid(lbl):
 			continue
 		var sel: bool = i == _selected
-		var cursor := "█" if (sel and _cursor_on) else " "
-		lbl.text = ("     [%d] " % (i + 1)) + ITEMS[i] + cursor
-		set_inverted(lbl, sel)
+		lbl.text = ("     [%d] " % (i + 1)) + ITEMS[i]
+		set_inverted(lbl, sel, Color(0.7, 0.7, 0.7), true)
+		set_cursor_at(lbl, sel and _cursor_on)
 
 
 func _on_cursor_blink() -> void:

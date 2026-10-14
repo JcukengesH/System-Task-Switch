@@ -107,10 +107,10 @@ func _update_selection() -> void:
 			continue
 		var opt: Dictionary = _options[i]
 		var sel: bool = i == _selected
-		var cursor := "█" if (sel and _cursor_on) else " "
 		var mark := "  [x]" if opt["active"] else ""
-		lbl.text = "  " + opt["label"] + opt["suffix"] + mark + cursor
-		set_inverted(lbl, sel)
+		lbl.text = "  " + opt["label"] + opt["suffix"] + mark
+		set_inverted(lbl, sel, Color(0.7, 0.7, 0.7), true)
+		set_cursor_at(lbl, sel and _cursor_on)
 
 
 func _on_cursor_blink() -> void:
@@ -132,10 +132,22 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:
 		_hover_at(event.position)
 		return
-	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-		_click_at(event.position)
-		get_viewport().set_input_as_handled()
-		return
+	if event is InputEventMouseButton and event.pressed:
+		match event.button_index:
+			MOUSE_BUTTON_LEFT:
+				_click_at(event.position)
+				get_viewport().set_input_as_handled()
+				return
+			MOUSE_BUTTON_WHEEL_UP:
+				_wheel_adjust(event.position, 1)
+				get_viewport().set_input_as_handled()
+				return
+			MOUSE_BUTTON_WHEEL_DOWN:
+				_wheel_adjust(event.position, -1)
+				get_viewport().set_input_as_handled()
+				return
+			_:
+				pass
 
 	if event is InputEventKey and event.pressed and not event.echo:
 		get_viewport().set_input_as_handled()
@@ -184,12 +196,43 @@ func _click_at(pos: Vector2) -> void:
 			_update_selection()
 			SFX.key()
 			if opt["value"] == "volume" or opt["value"] == "sfx_volume":
-				# Левая половина строки = -, правая = +.
-				var mid: float = r.position.x + r.size.x * 0.5
-				_adjust_current(-1 if pos.x < mid else 1)
+				_volume_click(lbl, pos, r)
 			else:
 				_select_option()
 			return
+
+
+# Хит-зоны реальных [<] и [>], а не «левая/правая половина»: раньше обе
+# стрелки стояли в правой половине длинной строки, и клик по [ < ] тоже
+# добавлял громкость (фидбек: мышь только увеличивает).
+func _volume_click(lbl: Label, pos: Vector2, r: Rect2) -> void:
+	var cell: float = _cell_width(lbl)
+	if cell <= 0.0:
+		return
+	var rel: float = pos.x - r.position.x
+	var t: String = lbl.text
+	var li: int = t.find("[<]")
+	var ri: int = t.find("[>]")
+	if li >= 0 and rel >= float(li) * cell - cell * 0.6 and rel <= float(li + 3) * cell + cell * 0.6:
+		_adjust_current(-1)
+	elif ri >= 0 and rel >= float(ri) * cell - cell * 0.6 and rel <= float(ri + 3) * cell + cell * 0.6:
+		_adjust_current(1)
+
+
+# Колесо мыши над строкой громкости — крутит её (±10%).
+func _wheel_adjust(pos: Vector2, dir: int) -> void:
+	for i in _item_labels.size():
+		var lbl: Label = _item_labels[i]
+		if not lbl.get_global_rect().has_point(pos):
+			continue
+		var v: String = _options[i]["value"]
+		if v != "volume" and v != "sfx_volume":
+			return
+		_selected = i
+		_update_selection()
+		SFX.key()
+		_adjust_current(dir)
+		return
 
 
 func _adjust_current(dir: int) -> void:
