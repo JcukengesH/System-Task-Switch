@@ -390,14 +390,19 @@ func _fit_label_font_size() -> void:
 # чтобы на каждый redraw не строить строки и не мерить шрифт заново.
 var _border_cache: Dictionary = {}
 
+# px: кегль ASCII-глифов рамки квадранта (§10.4: голых чисел в _draw нет).
+const BORDER_FONT_SIZE := 18
+
 
 func _draw_ascii_border() -> void:
 	var font: Font = get_theme_font("font")
 	if font == null:
 		font = ThemeDB.fallback_font
-	var fs: int = 18
+	var fs: int = BORDER_FONT_SIZE
 
-	var key: String = str(int(size.x)) + "x" + str(int(size.y))
+	# Целочисленный ключ вместо строки: в покадровом пути пульсирующих
+	# рамок не аллоцируется String (§10.5).
+	var key: Vector2i = Vector2i(int(size.x), int(size.y))
 	var m: Dictionary = _border_cache.get(key, {})
 	if m.is_empty():
 		var sample_size: Vector2 = font.get_string_size("M", HORIZONTAL_ALIGNMENT_LEFT, -1, fs)

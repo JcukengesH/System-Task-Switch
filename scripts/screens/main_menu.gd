@@ -91,7 +91,7 @@ func _input(event: InputEvent) -> void:
 			KEY_ESCAPE:
 				SFX.key()
 				_locked = true
-				await clear_animated(0.03)
+				clear_instant()
 				menu_action.emit("exit")
 
 
@@ -120,5 +120,5 @@ func _click_at(pos: Vector2) -> void:
 func _confirm() -> void:
 	_locked = true
 	var action: String = String(ITEMS[_selected]).to_lower()
-	await clear_animated(0.04)
+	clear_instant()
 	menu_action.emit(action)

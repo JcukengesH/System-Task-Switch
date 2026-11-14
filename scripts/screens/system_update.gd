@@ -5,9 +5,13 @@ extends TerminalScreen
 # (что + почём), крупнее шрифт, псевдографические рамки.
 
 signal back_requested
+signal debug_free_requested
 
 var buy_handler: Callable
 var _meta: Dictionary = {}
+# Дебаг-режим (F2, debug-сборки): карточки доступны всегда, покупка=цикл
+# уровня/снятие без байтов. Значение передаёт main.gd через ScreenRouter.
+var debug_free: bool = false
 
 var _selected: int = 0
 var _options: Array = []          # навигационный порядок: этапы, механики, НАЗАД
@@ -47,6 +51,12 @@ func _lvl(key: String) -> int:
 
 func _bytes() -> int:
 	return int(_meta.get("bytes", 0))
+
+
+# Истина только для отладочных сборок: в релизе флаг main.gd не ставится,
+# но и экран не должен реагировать на чужое значение переменной.
+func _debug_on() -> bool:
+	return debug_free and OS.is_debug_build()
 
 
 # Карточка: name — заголовок, status — вторая строка; enabled участвует в
@@ -129,7 +139,7 @@ func _rebuild() -> void:
 	clear_all()
 	add_line("", Color.WHITE, 12)
 	add_line("  +==========================================+", Color.WHITE, 22)
-	add_line("  |               SYSTEM UPDATE                |", Color.WHITE, 22)
+	add_line("  |              SYSTEM UPDATE               |", Color.WHITE, 22)
 	add_line("  +==========================================+", Color.WHITE, 22)
 	add_line("  BYTES: %d" % _bytes(), GOOD, 22)
 	add_line("", Color.WHITE, 8)
@@ -143,6 +153,25 @@ func _rebuild() -> void:
 
 	var stage_cards := _build_stage_cards()
 	var mech_cards := _build_mech_cards()
+	if _debug_on():
+		# Порядок массивов = Meta.STAGE_ORDER и [tolerance, rollback, skip]:
+		# все карточки кликабельны, value проставляется принудительно.
+		for i in stage_cards.size():
+			var sc: Dictionary = stage_cards[i]
+			sc["enabled"] = true
+			sc["value"] = "stage_" + str(Meta.STAGE_ORDER[i])
+			sc["status"] = "СНИТЬ (бесплатно)" if bool(sc.get("owned", false)) \
+				else "УСТАНОВИТЬ (бесплатно)"
+		var mech_values := ["tolerance", "rollback", "skip"]
+		# Порядок _build_mech_cards жёстко связан с этим списком (см. также
+		# комментарий у stage-цикла): любая правка секций обязана сохранить
+		# три карточки в этом же порядке.
+		assert(mech_cards.size() == mech_values.size())
+		for i in mech_cards.size():
+			var mc: Dictionary = mech_cards[i]
+			mc["enabled"] = true
+			mc["value"] = str(mech_values[i])
+			mc["status"] = "ЦИКЛ УРОВНЯ +1 -> 0 (бесплатно)"
 	var back := _card("НАЗАД", "В ГЛАВНОЕ МЕНЮ", false, "back")
 	_options = stage_cards + mech_cards + [back]
 
@@ -162,6 +191,10 @@ func _rebuild() -> void:
 		int(life.get("letters", 0)), int(life.get("shapes", 0)),
 		int(life.get("stroop", 0)), int(life.get("master", 0)),
 	], Color(0.6, 0.6, 0.6), 17)
+	if OS.is_debug_build():
+		add_line("  [F2] DEBUG FREE: %s — без байтов, в обход правил и гейтов" %
+			("ВКЛ" if debug_free else "ВЫКЛ"),
+			SEL_ON if debug_free else Color(0.6, 0.6, 0.6), 16)
 	add_line("  [W/S] NAV   [ENTER] BUY   [MOUSE] CLICK   [ESC] BACK",
 		Color(0.6, 0.6, 0.6), 16)
 
@@ -236,7 +269,7 @@ func _try_buy() -> void:
 	if v == "back":
 		_locked = true
 		SFX.key()
-		await clear_animated(0.03)
+		clear_instant()
 		back_requested.emit()
 		return
 	if v == "" or not card.get("enabled", false):
@@ -272,10 +305,15 @@ func _input(event: InputEvent) -> void:
 				SFX.key()
 			KEY_ENTER, KEY_SPACE, KEY_KP_ENTER:
 				_try_buy()
+			KEY_F2:
+				# Бесплатный дебаг-режим витрины (только debug-сборки,
+				# гейт и на main-стороне в _on_debug_free_toggled).
+				if OS.is_debug_build():
+					debug_free_requested.emit()
 			KEY_ESCAPE:
 				_locked = true
 				SFX.key()
-				await clear_animated(0.03)
+				clear_instant()
 				back_requested.emit()
 
 

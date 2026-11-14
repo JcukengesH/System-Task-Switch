@@ -106,9 +106,12 @@ func _on_intro_finished() -> void:
 func _load(path: String, loop: bool) -> AudioStream:
 	if path == "" or not ResourceLoader.exists(path):
 		return null
-	var stream: AudioStream = load(path)
-	if stream == null:
+	var src: AudioStream = load(path)
+	if src == null:
 		return null
+	# loop — свойство роли трека, а не ресурса: правим копию, а не общий
+	# кэш загрузчика (один файл в двух ролях не должен конфликтовать).
+	var stream: AudioStream = src.duplicate(true)
 	if stream is AudioStreamOggVorbis:
 		stream.loop = loop
 		if loop:

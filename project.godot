@@ -26,10 +26,14 @@ buses/default_bus_layout="uid://crbflg7emnqmj"
 [autoload]
 
 SFX="*uid://d0sctn2fbp8b"
+MCPRuntimeProbe="*res://addons/godot_mcp/mcp_runtime_probe.gd"
 
 [display]
 
+window/size/viewport_width=1280
+window/size/viewport_height=720
 window/size/mode=2
+window/stretch/mode="canvas_items"
 
 [editor_plugins]
 

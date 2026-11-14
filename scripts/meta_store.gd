@@ -97,6 +97,25 @@ func try_buy(item: String) -> bool:
 	return true
 
 
+# Дебаг-переключатель магазина (режим F2 в main.gd, только debug-сборки):
+# без байтов и в обход правил try_buy. Этапы — установить/снять; механики —
+# цикл уровня +1 с перекатом 3 -> 0. Возвращает false для неизвестного item.
+func debug_toggle(item: String) -> bool:
+	match item:
+		"stage_shapes", "stage_stroop", "stage_master":
+			var stage: String = item.substr(6)
+			data["stages"][stage] = not bool(data["stages"].get(stage, false))
+		"tolerance":
+			data["tolerance"] = (tolerance() + 1) % (Meta.MAX_LEVEL + 1)
+		"rollback":
+			data["rollback"] = (rollback_level() + 1) % (Meta.MAX_LEVEL + 1)
+		"skip":
+			data["skip"] = (int(data["skip"]) + 1) % (Meta.MAX_LEVEL + 1)
+		_:
+			return false
+	return true
+
+
 # Чтение секции [meta] из уже загруженного ConfigFile (формат прежний).
 func load_from_cfg(cfg: ConfigFile) -> void:
 	data = Meta.default_meta()

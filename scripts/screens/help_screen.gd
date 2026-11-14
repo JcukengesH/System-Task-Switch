@@ -99,7 +99,7 @@ func _show_page_1() -> void:
 
 func _show_page_2() -> void:
 	# Страница модификаторов: имена те же, что вспыхивают на весь экран
-	# при включении (см. MOD_FLASH_NAMES в main.gd).
+	# при включении (см. MOD_FLASH_NAMES в session_presentation.gd).
 	var lines: Array = [
 		{"text": "  +==================================================+", "size": 20},
 		{"text": "  |              HELP  --  PAGE 2/2                  |", "size": 20},
@@ -136,7 +136,7 @@ func _input(event: InputEvent) -> void:
 			KEY_ESCAPE, KEY_ENTER, KEY_KP_ENTER:
 				SFX.key()
 				_locked = true
-				await clear_animated(0.03)
+				clear_instant()
 				back_requested.emit()
 			KEY_1:
 				SFX.key()
