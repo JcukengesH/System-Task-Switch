@@ -37,39 +37,40 @@ theme_override_constants/margin_bottom = 24
 layout_mode = 2
 theme_override_constants/separation = 14
 
-[node name="Grid" type="GridContainer" parent="Margin/VBox" unique_id=34485995]
+[node name="Grid" type="Control" parent="Margin/VBox" unique_id=34485995]
 layout_mode = 2
 size_flags_vertical = 3
-theme_override_constants/h_separation = 12
-theme_override_constants/v_separation = 12
-columns = 2
 
 [node name="Quadrant0" type="Control" parent="Margin/VBox/Grid" unique_id=570743445]
 custom_minimum_size = Vector2(200, 200)
-layout_mode = 2
-size_flags_horizontal = 3
-size_flags_vertical = 3
+layout_mode = 1
+anchors_preset = 0
+grow_horizontal = 0
+grow_vertical = 0
 script = ExtResource("2")
 
 [node name="Quadrant1" type="Control" parent="Margin/VBox/Grid" unique_id=1988924607]
 custom_minimum_size = Vector2(200, 200)
-layout_mode = 2
-size_flags_horizontal = 3
-size_flags_vertical = 3
+layout_mode = 1
+anchors_preset = 0
+grow_horizontal = 0
+grow_vertical = 0
 script = ExtResource("2")
 
 [node name="Quadrant2" type="Control" parent="Margin/VBox/Grid" unique_id=295524650]
 custom_minimum_size = Vector2(200, 200)
-layout_mode = 2
-size_flags_horizontal = 3
-size_flags_vertical = 3
+layout_mode = 1
+anchors_preset = 0
+grow_horizontal = 0
+grow_vertical = 0
 script = ExtResource("2")
 
 [node name="Quadrant3" type="Control" parent="Margin/VBox/Grid" unique_id=1680883486]
 custom_minimum_size = Vector2(200, 200)
-layout_mode = 2
-size_flags_horizontal = 3
-size_flags_vertical = 3
+layout_mode = 1
+anchors_preset = 0
+grow_horizontal = 0
+grow_vertical = 0
 script = ExtResource("2")
 
 [node name="GarbageTimer" type="Timer" parent="." unique_id=1195752580]

@@ -29,6 +29,7 @@ const LETTERS_FX_CHANCE := 0.25
 var hud: HudBuilder            # полосы/метки/оверлеи — вывод значений
 var quadrants: Array = []      # ItemDisplay-узлы из Main.tscn
 var fx_director: FxDirector    # тряска поля на верном ответе
+var layout: StageLayout        # геометрия поля (2×2 / одно поле на экран)
 
 # Пороги модификаторов, уже объявленные баннером в текущем забеге.
 var _mods_flashed: Dictionary = {}
@@ -41,6 +42,13 @@ var _mods_flashed: Dictionary = {}
 # Возвращает true, если выпал «мусор»: таймер реакции и waiting_for_garbage —
 # состояние забега, их заводит SessionRules.
 func show_item(item: Dictionary, quad_index: int, prev_quadrant: int, combo: int) -> bool:
+	# На одном поле виден только главный квадрант: задание в ином углу
+	# просто исчезло бы с экрана. Правила (SessionRules) обязаны передать
+	# нулевой индекс; чужой индекс = рассинхрон геометрии и правил, о нём кричим.
+	if quad_index != 0 and field() == StageLayout.Field.FULL:
+		push_warning("FULL-поле: квадрант %d невидим, взят главный 0" % quad_index)
+		quad_index = 0
+
 	# Оптимизация: раньше трогались все 4 квадранта на каждое задание.
 	# Достаточно очистить предыдущий активный и подготовить новый.
 	if prev_quadrant >= 0 and prev_quadrant < quadrants.size() and prev_quadrant != quad_index:
@@ -108,6 +116,31 @@ func _clear_quadrant(index: int) -> void:
 	prev.clear_item()
 	prev.set_active(false)
 	prev.set_transform_effect("none")
+
+
+# ---------- Геометрия поля (2×2 / одно поле на весь экран) ----------
+# Что за геометрия нужна этапу — решает SessionRules; здесь только «как»:
+# снять содержимое и переложить рамки.
+func field() -> int:
+	if layout == null:
+		return StageLayout.Field.GRID
+	return layout.field()
+
+
+func set_field(f: int) -> void:
+	if layout == null:
+		return
+	clear_quadrants()
+	layout.set_field(f)
+
+
+# Ступенчатый морфинг поля. Длительность витрина не ждёт: вызывающий
+# сам держит таймер замороженным на StageLayout.FREEZE_TIME.
+func play_field_transition(f: int) -> void:
+	if layout == null:
+		return
+	clear_quadrants()
+	layout.transition_to(f)
 
 
 # ---------- Индикаторы HUD (тексты готовит здесь, значения даёт SessionRules) ----------

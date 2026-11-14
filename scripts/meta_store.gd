@@ -23,6 +23,13 @@ func add_bytes(amount: int) -> void:
 	data["bytes"] = balance() + amount
 
 
+# Полный сброс прогресса: кошелёк, этапы, механики, «очки за всё время».
+# default_meta() каждый раз возвращает свежие вложенные словари, поэтому
+# присваивание безопасно (общего состояния с прежним snapshot нет).
+func reset() -> void:
+	data = Meta.default_meta()
+
+
 func spend(price: int) -> bool:
 	if balance() < price:
 		return false

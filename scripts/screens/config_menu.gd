@@ -4,6 +4,9 @@ signal back_requested
 signal bindings_changed(answer1: InputEvent, answer2: InputEvent)
 signal settings_changed(volume: float, sfx_volume: float, crt: bool,
 		music_fx: bool, reactivity: float)
+# Экран не знает, где лежит прогресс: сброс выполняет main, результат
+# возвращается сюда через on_progress_reset().
+signal progress_reset_requested
 
 var binding1: InputEvent
 var binding2: InputEvent
@@ -19,6 +22,17 @@ var _item_labels: Array = []
 var _locked: bool = false
 var _listening_for: int = -1  # -1 = не слушаем, 0 = answer1, 1 = answer2
 var _hint_label: Label
+var _dialog: ConfirmDialog
+
+# Тексты нижней строки-подсказки: обычная, режим захвата клавиши, результат сброса.
+const _HINT_DEFAULT := "  [W/S] NAV   [ENTER] SELECT   [<-/->] ADJUST   [MOUSE] CLICK   [ESC] BACK"
+const _HINT_LISTENING := "  >> PRESS ANY KEY OR MOUSE BUTTON... [ESC] CANCEL"
+const _HINT_RESET := "  PROGRESS CLEARED  [SETTINGS KEPT]"
+const _HINT_RESET_SECONDS := 2.5
+const _RESET_TITLE := "RESET PROGRESS?"
+const _RESET_BODY := "BYTES, STAGES AND MECHANICS GO TO ZERO."
+const _RESET_YES := "RESET"
+const _RESET_NO := "KEEP"
 
 
 func set_bindings(e1: InputEvent, e2: InputEvent) -> void:
@@ -43,6 +57,11 @@ func _ready() -> void:
 	if binding2 == null:
 		binding2 = InputEventKey.new()
 		binding2.keycode = KEY_2
+	_dialog = ConfirmDialog.new()
+	_dialog.confirmed.connect(_on_reset_confirmed)
+	_dialog.cancelled.connect(_on_reset_cancelled)
+	add_child(_dialog)
+	_dialog.font = _font
 	_rebuild()
 
 
@@ -70,6 +89,9 @@ func _rebuild() -> void:
 		{"label": "FX REACTIVITY",       "value": "reactivity", "active": false, "suffix": "  [<] " + str(int(round(fx_reactivity * 100.0))) + "% [>]"},
 		{"label": "CRT EFFECTS",         "value": "crt",        "active": crt_enabled, "suffix": ""},
 		{"label": "MUSIC REACTIVE FX",   "value": "music_fx",   "active": music_fx_enabled, "suffix": ""},
+		# Сброс прогресса — последний пункт перед выходом: про него нельзя
+		# «промахнуться» колесом и он требует подтверждения.
+		{"label": "RESET PROGRESS",      "value": "reset_progress", "active": false, "suffix": "  [ENTER]"},
 		{"label": "BACK",                "value": "back",       "active": false, "suffix": ""},
 	]
 
@@ -79,8 +101,8 @@ func _rebuild() -> void:
 		_item_labels.append(lbl)
 
 	add_line("", Color.WHITE, 20)
-	_hint_label = add_line("  [W/S] NAV   [ENTER] SELECT   [<-/->] ADJUST   [MOUSE] CLICK   [ESC] BACK",
-		Color(0.6, 0.6, 0.6), 14)
+	_hint_label = add_line(_HINT_DEFAULT, Color(0.6, 0.6, 0.6), 14)
+	_apply_hint()
 
 	_selected = prev_selected
 	if _selected >= _options.size():
@@ -125,6 +147,12 @@ func _on_cursor_blink() -> void:
 
 
 func _input(event: InputEvent) -> void:
+	# Пока открыта плашка подтверждения, она — единственный адресат ввода:
+	# делегируем ей до своих обработчиков (у диалога собственного _input()
+	# нет намеренно, иначе он перехватывал бы события раньше экрана).
+	if _dialog != null and _dialog.is_open():
+		_dialog.handle_input(event)
+		return
 	if _locked:
 		return
 	if _listening_for >= 0:
@@ -322,6 +350,11 @@ func _select_option() -> void:
 		emit_settings()
 		_rebuild()
 		return
+	if v == "reset_progress":
+		# Только через подтверждение: ENTER открывает плашку, в ней выбран отказ.
+		SFX.error()
+		_dialog.open(_RESET_TITLE, _RESET_BODY, _RESET_YES, _RESET_NO)
+		return
 	if v == "volume" or v == "sfx_volume" or v == "reactivity":
 		# Нажатие ENTER на строках-слайдерах ничего не делает,
 		# регулировка — только через ←/→, колесо или клик по [<]/[>].
@@ -334,9 +367,41 @@ func emit_settings() -> void:
 
 
 func _show_listening_hint() -> void:
-	if _hint_label and is_instance_valid(_hint_label):
-		_hint_label.text = "  >> PRESS ANY KEY OR MOUSE BUTTON... [ESC] CANCEL"
-		_hint_label.add_theme_color_override("font_color", Color(1, 0.85, 0.2))
+	_set_hint(_HINT_LISTENING, Color(1, 0.85, 0.2))
+
+
+# ---------- Нижняя строка статуса ----------
+func _set_hint(text: String, color: Color) -> void:
+	if _hint_label == null or not is_instance_valid(_hint_label):
+		return
+	_hint_label.text = text
+	_hint_label.add_theme_color_override("font_color", color)
+
+
+# Актуальный текст по состоянию экрана: пересборка строк или таймер возврата
+# не должны терять режим (захват клавиши, сообщение о сбросе).
+func _apply_hint() -> void:
+	if _listening_for >= 0:
+		_show_listening_hint()
+	else:
+		_set_hint(_HINT_DEFAULT, Color(0.6, 0.6, 0.6))
+
+
+# Подтверждение в плашке: экран не знает, где лежит прогресс, — просит main.
+func _on_reset_confirmed() -> void:
+	progress_reset_requested.emit()
+
+
+func _on_reset_cancelled() -> void:
+	SFX.key()
+
+
+# Колбэк main: прогресс обнулён и сохранён, настройки не тронуты.
+func on_progress_reset() -> void:
+	SFX.corrupted()
+	_set_hint(_HINT_RESET, Color(1.0, 0.45, 0.35))
+	var timer: SceneTreeTimer = get_tree().create_timer(_HINT_RESET_SECONDS)
+	timer.timeout.connect(_apply_hint)
 
 
 func _exit() -> void:

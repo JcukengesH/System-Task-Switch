@@ -11,6 +11,8 @@ var bytes_earned: int = 0
 
 var _handled: bool = false
 var _input_enabled: bool = false
+var _rows: Array[Dictionary] = []
+var _hovered: int = -1
 
 
 func _ready() -> void:
@@ -67,8 +69,14 @@ func _run() -> void:
 		return
 
 	add_line("", Color.WHITE, 20)
-	add_line("  [ESC] - RETURN TO MENU", Color(0.7, 0.7, 0.7), 22)
-	add_line("  [ANY] - RUN AGAIN", Color.WHITE, 24)
+	var menu_row := add_line("  [ESC] / [MOUSE] - RETURN TO MENU", Color(0.7, 0.7, 0.7), 22)
+	var again_row := add_line("  [ANY] / [CLICK] - RUN AGAIN", Color.WHITE, 24)
+	# Кликабельные строки (фидбек: мышь должна работать на каждом экране).
+	# Клик мимо строк остаётся «быстрым рестартом», как было.
+	_rows = [
+		{"label": menu_row, "kind": "menu", "color": Color(0.7, 0.7, 0.7)},
+		{"label": again_row, "kind": "again", "color": Color.WHITE},
+	]
 
 
 func _input(event: InputEvent) -> void:
@@ -88,14 +96,51 @@ func _input(event: InputEvent) -> void:
 			restart_requested.emit()
 		return
 
+	if event is InputEventMouseMotion:
+		_update_hover(event.position)
+		return
+
 	if event is InputEventMouseButton and event.pressed:
 		match event.button_index:
 			MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT, MOUSE_BUTTON_MIDDLE, \
 			MOUSE_BUTTON_XBUTTON1, MOUSE_BUTTON_XBUTTON2:
-				SFX.key()
+				var kind := _row_kind_at(event.position)
 				_handled = true
+				SFX.key()
 				get_viewport().set_input_as_handled()
-				restart_requested.emit()
+				if kind == "menu":
+					_exit_to_menu()
+				else:
+					restart_requested.emit()
+
+
+func _row_kind_at(pos: Vector2) -> String:
+	var index := _row_index_at(pos)
+	if index < 0:
+		return ""
+	return String(_rows[index]["kind"])
+
+
+func _update_hover(pos: Vector2) -> void:
+	var index := _row_index_at(pos)
+	if index == _hovered:
+		return
+	_hovered = index
+	for i: int in _rows.size():
+		var row: Dictionary = _rows[i]
+		var lbl: Label = row["label"]
+		if lbl == null or not is_instance_valid(lbl):
+			continue
+		var base: Color = row["color"]
+		set_inverted(lbl, i == index, base, false)
+
+
+func _row_index_at(pos: Vector2) -> int:
+	for i: int in _rows.size():
+		var lbl: Label = _rows[i]["label"]
+		if lbl != null and is_instance_valid(lbl) and lbl.get_global_rect().has_point(pos):
+			return i
+	return -1
 
 
 func _exit_to_menu() -> void:

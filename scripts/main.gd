@@ -8,6 +8,9 @@ extends Control
 # Мета-прогрессия — MetaStore, музыка — MusicDeck. Попапы-подсказки из игры
 # убраны (фидбек 2026-11-14): объявление — только белыми баннерами (HudBuilder).
 
+# Встроенный мышиный путь ответа в забеге (номер кнопки -> номер ответа).
+const MOUSE_ANSWERS := {MOUSE_BUTTON_LEFT: 2, MOUSE_BUTTON_RIGHT: 1}
+
 enum State { BOOT, MENU, CONFIG, HELP, GAME, CUTSCENE, SHOP }
 var current_state: int = State.BOOT
 
@@ -19,6 +22,9 @@ var current_state: int = State.BOOT
 ]
 @onready var garbage_timer: Timer = $GarbageTimer
 @onready var countdown_timer: Timer = $CountdownTimer
+# Поле квадрантов: обычный Control, раскладкой рулит StageLayout (2×2 <->
+# одно поле на весь экран), поэтому здесь только ссылка на узел.
+@onready var field_grid: Control = get_node_or_null("Margin/VBox/Grid") as Control
 
 # Мета-прогрессия: байты, купленные модули/механики, очки за всё время.
 var _meta := MetaStore.new()      # байты/этапы/механики + правила покупок
@@ -38,6 +44,7 @@ var _fxd := FxDirector.new()
 var _router := ScreenRouter.new()
 var _session := SessionRules.new()
 var _presenter := SessionPresentation.new()
+var _layout := StageLayout.new()
 
 var _terminal_font: Font = null
 var _terminal_font_bold: Font = null
@@ -138,6 +145,7 @@ func _ready() -> void:
 	_router.bindings_changed.connect(_on_bindings_changed)
 	_router.settings_changed.connect(_on_settings_changed)
 	_router.debug_free_requested.connect(_on_debug_free_toggled)
+	_router.progress_reset_requested.connect(_on_progress_reset)
 
 	# Забег: зависимости + обработка завершения (катсцены) и сохранения.
 	# Витрина забега (квадранты/HUD/баннеры) — у SessionPresentation, сессия
@@ -145,6 +153,8 @@ func _ready() -> void:
 	_presenter.hud = _hud
 	_presenter.quadrants = quadrants
 	_presenter.fx_director = _fxd
+	_layout.attach(field_grid, quadrants)
+	_presenter.layout = _layout
 	_session.presenter = _presenter
 	_session.host = self
 	_session.settings = _settings
@@ -239,6 +249,19 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		return
 
+	# Мышь как встроенный путь ответа (фидбек 2026-11-14: «мышью должно быть
+	# можно играть везде»): ЛКМ -> ответ 2, ПКМ -> ответ 1. Кнопку, которую
+	# игрок сам повесил на биндинг, здесь не дублируем — иначе один клик
+	# давал бы два разных ответа (свой и встроенный).
+	if event is InputEventMouseButton:
+		var mb: InputEventMouseButton = event as InputEventMouseButton
+		if mb.pressed:
+			var mouse_answer: int = _builtin_mouse_answer(mb.button_index)
+			if mouse_answer > 0:
+				handle_answer(mouse_answer)
+				get_viewport().set_input_as_handled()
+				return
+
 
 func _event_matches(event: InputEvent, binding: InputEvent) -> bool:
 	if binding == null:
@@ -247,6 +270,23 @@ func _event_matches(event: InputEvent, binding: InputEvent) -> bool:
 		return event.pressed and not event.echo and event.keycode == binding.keycode
 	if binding is InputEventMouseButton and event is InputEventMouseButton:
 		return event.pressed and event.button_index == binding.button_index
+	return false
+
+
+func _builtin_mouse_answer(button_index: int) -> int:
+	if not MOUSE_ANSWERS.has(button_index):
+		return 0
+	if _binding_uses_mouse_button(button_index):
+		return 0
+	return int(MOUSE_ANSWERS[button_index])
+
+
+func _binding_uses_mouse_button(button_index: int) -> bool:
+	var bindings: Array = [_settings.binding_answer1, _settings.binding_answer2]
+	for b in bindings:
+		var mb := b as InputEventMouseButton
+		if mb != null and mb.button_index == button_index:
+			return true
 	return false
 
 
@@ -382,6 +422,18 @@ func _on_bindings_changed(e1: InputEvent, e2: InputEvent) -> void:
 	_settings.binding_answer1 = e1
 	_settings.binding_answer2 = e2
 	_save_settings()
+
+
+func _on_progress_reset() -> void:
+	# Сброс касается только секции [meta] (байты, этапы, механики, очки):
+	# звук, CRT и биндинги игрока остаются. Экран CONFIG доступен из меню,
+	# активного забега в этот момент нет — пересчёт skip/tolerance не нужен.
+	_meta.reset()
+	_save_settings()
+	# Просивший экран сам покажет статус: контракт has_method("on_progress_reset").
+	var screen: TerminalScreen = _router.current_screen()
+	if screen != null and is_instance_valid(screen) and screen.has_method("on_progress_reset"):
+		screen.on_progress_reset()
 
 
 func _show_help_screen() -> void:
