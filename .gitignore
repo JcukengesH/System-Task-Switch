@@ -34,3 +34,9 @@ desktop.ini
 
 # Одноразовые dev-скрипты (не нужны в репозитории)
 fix_main.py
+
+# Android gradle build template (reinstall via Project menu).
+# .gdignore коммитим принудительно: без него редактор импортирует .webp из
+# шаблона, и AAPT-мердж ресурсов падает на сборке APK.
+/android/*
+!/android/.gdignore

@@ -10,6 +10,12 @@ extends Control
 
 # Встроенный мышиный путь ответа в забеге (номер кнопки -> номер ответа).
 const MOUSE_ANSWERS := {MOUSE_BUTTON_LEFT: 2, MOUSE_BUTTON_RIGHT: 1}
+# Тач-путь ответа (сборка под Android): доля ширины экрана, левее границы —
+# ответ 1, правее — ответ 2 (зеркально мыши: ЛКМ=2, ПКМ=1).
+const TOUCH_SIDE_RATIO := 0.5
+# Палец удерживается на экране: ни эмулируемый тачем клик мыши, ни
+# клавиши-биндинги не должны давать второй ответ (одно касание = один ответ).
+var _touch_down: bool = false
 
 enum State { BOOT, MENU, CONFIG, HELP, GAME, CUTSCENE, SHOP }
 var current_state: int = State.BOOT
@@ -240,6 +246,37 @@ func _unhandled_input(event: InputEvent) -> void:
 	# Здесь всегда active == true: end_game() мгновенно переводит current_state
 	# в CUTSCENE, а рестарт обрабатывает сам cutscene — мёртвая ветка убрана.
 
+	# Тач как встроенный путь ответа (сборка под Android, фидбек 2026-11-14):
+	# касание левой доли экрана -> ответ 1, правой -> ответ 2. Ветка стоит до
+	# биндингов: из касания Godot эмулирует клик мыши, и пока палец на экране
+	# (_touch_down), все эмулированные мышиные события глушатся — один тап
+	# даёт ровно один ответ, по стороне экрана.
+	if event is InputEventScreenTouch:
+		var st: InputEventScreenTouch = event as InputEventScreenTouch
+		_touch_down = st.pressed
+		if not st.pressed:
+			return
+		if _hud.debug_menu and _hud.debug_menu.visible:
+			return
+		var half: float = get_viewport().get_visible_rect().size.x * TOUCH_SIDE_RATIO
+		handle_answer(1 if st.position.x < half else 2)
+		get_viewport().set_input_as_handled()
+		return
+
+	if _touch_down:
+		return
+
+	# Гейт мобильных сборок (Android/iOS). Движок из каждого касания эмулирует
+	# клик мыши, и эмулированный PRESS долетает до _unhandled_input РАНЬШЕ
+	# оригинального InputEventScreenTouch (трассировка событий 2026-11-14) —
+	# без гейта встроенный ответ «ЛКМ=2» срабатывал раньше тач-ветки и ломал
+	# тапы по левой доле. На мобильных мышиные ответы (включая биндинги-мышь)
+	# отключены целиком: авторитетны доли экрана, клавиши работают как раньше.
+	# Тег — строчными: в 4.7 все фичи OS.has_feature регистрозависимые и
+	# канонически нижние (core/os/os.cpp, platform/android/os_android.cpp).
+	if OS.has_feature("mobile") and event is InputEventMouseButton:
+		return
+
 	if _event_matches(event, _settings.binding_answer1):
 		handle_answer(1)
 		get_viewport().set_input_as_handled()
@@ -316,6 +353,10 @@ func _abort_game() -> void:
 
 # ---------- Экраны: оркестрация состояний поверх ScreenRouter ----------
 func _set_game_visible(v: bool) -> void:
+	# Палец мог быть отпущен уже вне GAME (релиз обрабатывает только тач-ветка
+	# в секции GAME) — иначе _touch_down залипает и глушит мышь/клавиши до
+	# следующего касания. Сбрасываем при любом входе/выходе из геймплея.
+	_touch_down = false
 	if _margin:
 		_margin.visible = v
 	_hud.set_game_nodes_visible(v, _settings.music_fx_enabled)
