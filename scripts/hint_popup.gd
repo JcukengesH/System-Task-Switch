@@ -1,10 +1,15 @@
 class_name HintPopup
 extends RefCounted
+# СНЯТ С ИГРЫ (фидбек 2026-11-14): попапы правил этапа из игры убраны,
+# объявление ведут только белые баннеры (hud_builder.flash_announcements).
+# Ни один модуль больше не создаёт HintPopup — файл-заглушка до общей
+# зачистки дебаг-обвязки (F3/F4, см. DECISIONS.md R-020). Не подключать.
 # Попап-подсказка в стиле «терминальное окно»: появляется по центру, не
 # перекрывает символы в квадрантах и не принимает ввод (mouse_filter = IGNORE
 # у всех узлов). Правила этапа висят до нескольких нажатий ответа.
 # Включения модификаторов объявляет НЕ попап, а полноэкранный баннер в
-# main.gd (flash_announcements) — по принципу большой цифры ошибки.
+# hud_builder.gd (flash_announcements, вызов из session_rules.gd) — по
+# принципу большой цифры ошибки.
 # main.gd: build(parent) в _ready; далее show_stage / on_answer_press /
 # hide_popup / start_run.
 
@@ -115,9 +120,18 @@ func _show(title: String, rule: String, keys_line: String, presses: int) -> void
 func _rule_text(m: String) -> String:
 	match m:
 		"letters":
-			return "ВВЕРХУ:  [2] ГЛАСНАЯ · [1] СГЛАСНАЯ\nВНИЗУ:   [2] ЧЁТНАЯ · [1] НЕЧЁТНАЯ\n+1 B ЗА ВЕРНЫЙ ОТВЕТ"
+			return "ВВЕРХУ:  [2] ГЛАСНАЯ · [1] СГЛАСНАЯ\nВНИЗУ:   [2] ЧЁТНАЯ · [1] НЕЧЁТНАЯ\n" + _bonus_line(m)
 		"shapes":
-			return "СРАВНИ ЧИСЛО ГРАНЕЙ С ЦИФРОЙ\n[2] = РАВНО · [1] = НЕ РАВНО\n+2 B ЗА ВЕРНЫЙ ОТВЕТ"
+			return "СРАВНИ ЧИСЛО ГРАНЕЙ С ЦИФРОЙ\n[2] = РАВНО · [1] = НЕ РАВНО\n" + _bonus_line(m)
 		"stroop":
-			return "СРАВНИ ЦВЕТ ТЕКСТА С ЕГО НАЗВАНИЕМ\n[2] = СОВПАДАЕТ · [1] = НЕТ\n+3 B ЗА ВЕРНЫЙ ОТВЕТ"
-	return "ВСЕ ТИПЫ ЗАДАНИЙ ВПЕРЕМЕШКУ\nБАЙТОВ НЕТ · ЛЮБАЯ ОШИБКА — КОНЕЦ ИГРЫ"
+			return "СРАВНИ ЦВЕТ ТЕКСТА С ЕГО НАЗВАНИЕМ\n[2] = СОВПАДАЕТ · [1] = НЕТ\n" + _bonus_line(m)
+	return "ВСЕ ТИПЫ ЗАДАНИЙ ВПЕРЕМЕШКУ\n" + _bonus_line("master")
+
+
+# Строка бонуса генерируется из Meta.BYTE_RATES: подсказка не должна
+# врать игроку про курс байтов при перенастройке баланса (§10.4).
+static func _bonus_line(m: String) -> String:
+	var rate: int = int(Meta.BYTE_RATES.get(m, 0))
+	if rate > 0:
+		return "+%d B ЗА ВЕРНЫЙ ОТВЕТ" % rate
+	return "БАЙТОВ НЕТ · ЛЮБАЯ ОШИБКА — КОНЕЦ ИГРЫ"

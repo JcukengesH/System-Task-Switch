@@ -39,30 +39,36 @@ const MOD_THRESHOLDS := {
 const TRANSFORMS := ["flip-h", "flip-v", "rotate-180"]
 
 # ---------- Правила режимов (статические) ----------
+# Границы этапов берутся из Meta.STAGE_START_COMBO — единый источник правды
+# (§10.4), здесь больше нет хардкода 100/200/300. Порядок этапов:
+# ["letters"] + Meta.STAGE_ORDER.
+
+static func stage_modes() -> Array:
+	return ["letters"] + Meta.STAGE_ORDER
+
+
+static func _stage_index(c: int) -> int:
+	var idx: int = 0
+	for i in Meta.STAGE_START_COMBO.size():
+		if c >= int(Meta.STAGE_START_COMBO[i]):
+			idx = i
+	return idx
+
+
 static func get_main_mode(c: int) -> String:
-	if c >= 300: return "master"
-	if c >= 200: return "stroop"
-	if c >= 100: return "shapes"
-	return "letters"
+	return String(stage_modes()[_stage_index(c)])
 
 
 static func get_mode_reset_value(c: int) -> int:
-	if c < 100: return 0
-	if c < 200: return 100
-	if c < 300: return 200
-	return 300
+	return int(Meta.STAGE_START_COMBO[_stage_index(c)])
 
 
 static func get_stage_index(m: String) -> int:
-	match m:
-		"letters": return 1
-		"shapes":  return 2
-		"stroop":  return 3
-		"master":  return 4
-	return 1
+	var i: int = stage_modes().find(m)
+	return (i + 1) if i >= 0 else 1
 
 
-static func correct_answer(item: Dictionary, quadrant: int):
+static func correct_answer(item: Dictionary, quadrant: int) -> Variant:
 	# quadrant < 2 — верхние квадранты (буква), иначе — цифра.
 	if item["type"] == "garbage":
 		return null
@@ -79,7 +85,7 @@ static func correct_answer(item: Dictionary, quadrant: int):
 	return null
 
 
-static func random_item(arr: Array):
+static func random_item(arr: Array) -> Variant:
 	return arr[randi() % arr.size()]
 
 

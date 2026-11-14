@@ -11,7 +11,7 @@ var music_volume: float = 0.8
 var sfx_volume: float = 0.8
 var crt_enabled: bool = true
 var music_fx_enabled: bool = true
-var fx_reactivity: float = 0.6
+var fx_reactivity: float = 0.3   # дефолт по STYLE.md: «кривая pow 1.5, дефолт 0.3»
 
 var _selected: int = 0
 var _options: Array = []
@@ -27,7 +27,7 @@ func set_bindings(e1: InputEvent, e2: InputEvent) -> void:
 
 
 func set_settings(volume: float, sfx_vol: float, crt: bool, music_fx: bool,
-		reactivity: float = 0.6) -> void:
+		reactivity: float = 0.3) -> void:
 	music_volume = volume
 	sfx_volume = sfx_vol
 	crt_enabled = crt
@@ -340,5 +340,7 @@ func _show_listening_hint() -> void:
 
 
 func _exit() -> void:
-	await clear_animated(0.03)
+	# Без анимации выхода: навигационное нажатие не должно попадать
+	# в мёртвое окно экрана (см. clear_instant).
+	clear_instant()
 	back_requested.emit()

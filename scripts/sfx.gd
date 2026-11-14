@@ -211,3 +211,22 @@ func stop_all() -> void:
 		_hum_player.stop()
 	if _beep_player != null and _beep_player.playing:
 		_beep_player.stop()
+
+
+# При остановке движка освобождаем ВСЕ аудиоссылки: AudioStreamPlayer держит
+# .stream и playback, пока его не остановить, — без этого OGG booting и
+# процедурные WAV утекали («6 ObjectDB instances were leaked at exit»,
+# ревью 2026-11-14).
+func _exit_tree() -> void:
+	stop_all()
+	for p in _pool:
+		p.stream = null
+	if _hum_player != null:
+		_hum_player.stream = null
+	if _beep_player != null:
+		_beep_player.stream = null
+	_kbd_streams.clear()
+	_err_streams.clear()
+	_corrupted = null
+	_booting = null
+	_shutdown = null

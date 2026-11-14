@@ -3,12 +3,25 @@ extends TerminalScreen
 signal boot_finished
 
 var _cursor_target: Label
+var _skipped: bool = false
 
 
 func _ready() -> void:
 	super._ready()
 	SFX.booting()
 	_run_boot()
+
+
+# Любая клавиша/клик форсирует конец POST: ~5 с непропускаемого ожидания
+# раздражали (ревью 2026-11-14). Аутентичность пути остаётся — без нажатия
+# POST идёт в своём темпе.
+func _input(event: InputEvent) -> void:
+	if _skipped:
+		return
+	if (event is InputEventKey and event.pressed and not event.echo) \
+			or (event is InputEventMouseButton and event.pressed):
+		_skipped = true
+		get_viewport().set_input_as_handled()
 
 
 # Курсор мигает только на финальной строке POST (как на реальном BIOS),
@@ -21,6 +34,8 @@ func _on_cursor_blink() -> void:
 
 
 func _wait(t: float) -> void:
+	if _skipped:
+		return
 	await get_tree().create_timer(t).timeout
 
 
@@ -68,7 +83,7 @@ func _run_boot() -> void:
 		"Keyboard Controller ... 82H INT 5",
 		"Press DEL to enter SETUP",
 	]
-	await type_lines(detect, 0.13)
+	await type_lines(detect, 0.0 if _skipped else 0.13)
 	if not is_inside_tree():
 		return
 	await _wait(0.7)
@@ -82,7 +97,7 @@ func _run_boot() -> void:
 		"Mounting file systems ......... OK",
 		"Starting terminal service ...",
 	]
-	await type_lines(load, 0.1)
+	await type_lines(load, 0.0 if _skipped else 0.1)
 	if not is_inside_tree():
 		return
 
@@ -92,5 +107,8 @@ func _run_boot() -> void:
 	_cursor_target = add_line("", Color.WHITE, 24)
 	set_cursor_at(_cursor_target, true)
 	await _wait(1.1)
-	await clear_animated(0.025)
+	if _skipped:
+		clear_instant()
+	else:
+		await clear_animated(0.025)
 	boot_finished.emit()

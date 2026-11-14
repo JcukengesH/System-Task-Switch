@@ -16,6 +16,20 @@ var _cursor_cell: float = 0.0
 var _cursor_text_w: float = 0.0
 var _cursor_h: float = 0.0
 
+# --- Автоподгонка контента по высоте (фидбек 2026-11-14: на maximized-окне
+# у экрана поражения последняя кнопка «вылезала» за нижний край).
+# Не влезает — все шрифты в _vbox и его отступы множатся на один коэффициент
+# вплоть до FIT_MIN_RATIO. Правка не накапливается: перед каждым замером
+# размеры возвращаются к базовым (запомнены при создании узла).
+const FIT_MIN_RATIO := 0.72
+const FIT_MIN_FONT := 6            # нижняя грань читаемости моноширинного
+var _fit_base: Dictionary = {}     # instance_id -> базовый font_size Label
+var _fit_sep_base: int = 4         # базовый separation _vbox (из _ready)
+var _fit_queued: bool = false
+var _fit_retries: int = 0
+var _fit_margin: MarginContainer   # источник вертикальных полей для замера
+var _plate_cursor: bool = false    # резерв ячейки курсора на плашке
+
 
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -35,9 +49,11 @@ func _ready() -> void:
 	margin.add_theme_constant_override("margin_bottom", 40)
 	margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(margin)
+	_fit_margin = margin
 
 	_vbox = VBoxContainer.new()
 	_vbox.add_theme_constant_override("separation", 4)
+	_fit_sep_base = _vbox.get_theme_constant("separation")
 	_vbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	margin.add_child(_vbox)
 
@@ -47,6 +63,10 @@ func _ready() -> void:
 	_cursor_timer.autostart = true
 	_cursor_timer.timeout.connect(_on_cursor_blink)
 	add_child(_cursor_timer)
+
+	# Собственный size у топлевел-контрола под CanvasLayer всегда (0,0) —
+	# ориентир только вьюпорт; на его ресайзе пересчитываем автоподгонку.
+	get_viewport().size_changed.connect(_request_fit)
 
 
 func _process(_delta: float) -> void:
@@ -104,6 +124,7 @@ func _update_plate(lbl: Label, cursor: bool) -> void:
 	if cursor:
 		w += 2.0 + font.get_string_size("M", HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
 	_plate_w = w
+	_plate_cursor = cursor
 	_plate_rect.visible = true
 	_plate_rect.color = Color.WHITE
 	_position_plate()
@@ -190,12 +211,17 @@ func add_line(text: String, color: Color = Color.WHITE, font_size: int = 20) -> 
 	if _font:
 		lbl.add_theme_font_override("font", _font)
 	_vbox.add_child(lbl)
+	_fit_base[lbl.get_instance_id()] = font_size
+	_request_fit()
 	return lbl
 
 
 func clear_all() -> void:
 	for c in _vbox.get_children():
 		c.queue_free()
+	_fit_base.clear()
+	_fit_retries = 0
+	_vbox.add_theme_constant_override("separation", _fit_sep_base)
 
 
 func type_lines(lines: Array, delay: float = 0.12) -> void:
@@ -238,8 +264,92 @@ func clear_animated(delay: float = 0.04) -> void:
 		_cursor_timer.start()
 
 
+# «Мгновенная» версия clear_animated — для навигационных выходов экранов.
+# Анимированная очистка создавала мёртвое окно 0.3..0.6 с, в котором экран
+# съедал повторные нажатия (_locked), и игрок воспринимал это как «клавиша
+# не сработала». По STYLE.md анимации дискретны: страницы переключаются сразу.
+func clear_instant() -> void:
+	if _cursor_timer:
+		_cursor_timer.stop()
+	if _cursor_rect != null and is_instance_valid(_cursor_rect):
+		_cursor_rect.visible = false
+	_cursor_lbl = null
+	if _plate_rect != null and is_instance_valid(_plate_rect):
+		_plate_rect.visible = false
+	_plate_lbl = null
+	clear_all()
+
+
 func _exit_tree() -> void:
 	# Экран уходит из дерева (queue_free у экрана) — гасим таймер, иначе
 	# последний timeout может ударить по уже freed-лейблам (_update_selection).
 	if _cursor_timer:
 		_cursor_timer.stop()
+
+
+# ---------- Автоподгонка ----------
+func _request_fit() -> void:
+	if _fit_queued:
+		return
+	_fit_queued = true
+	_fit.call_deferred()
+
+
+# Откат к базовым размерам -> замер -> одно общее сжатие, если не влезает.
+# Отложенный запуск + кадр ожидания: get_combined_minimum_size() обязан
+# увидеть свежие размеры шрифтов, а в первые кадры size.y ещё нулевой.
+func _fit() -> void:
+	_fit_queued = false
+	if not is_inside_tree() or _vbox == null or not is_instance_valid(_vbox):
+		return
+	var vp: Vector2 = get_viewport_rect().size
+	if vp.y <= 0.0:
+		if _fit_retries < 30:
+			_fit_retries += 1
+			_request_fit()
+		return
+	_fit_retries = 0
+
+	var labels: Array = []
+	_collect_labels(_vbox, labels)
+	var bases: Dictionary = {}
+	for lbl in labels:
+		var id: int = lbl.get_instance_id()
+		var base: int = int(_fit_base.get(id, lbl.get_theme_font_size("font_size")))
+		bases[id] = base
+		lbl.add_theme_font_size_override("font_size", base)
+	_fit_base = bases
+	_vbox.add_theme_constant_override("separation", _fit_sep_base)
+
+	await get_tree().process_frame
+	if not is_inside_tree() or _vbox == null or not is_instance_valid(_vbox):
+		return
+	var need: float = _vbox.get_combined_minimum_size().y
+	if need <= 0.0:
+		return
+	var avail: float = get_viewport_rect().size.y \
+		- _fit_margin.get_theme_constant("margin_top") \
+		- _fit_margin.get_theme_constant("margin_bottom")
+	if need <= avail:
+		return
+	var k: float = clampf(avail / need, FIT_MIN_RATIO, 1.0)
+	for lbl in labels:
+		if not is_instance_valid(lbl):
+			continue
+		var fs: int = int(round(float(bases[lbl.get_instance_id()]) * k))
+		lbl.add_theme_font_size_override("font_size", maxi(FIT_MIN_FONT, fs))
+	_vbox.add_theme_constant_override("separation", int(round(_fit_sep_base * k)))
+	# Плашка и курсор измерены старыми метриками — пересчитать.
+	if _plate_lbl != null and is_instance_valid(_plate_lbl) \
+			and _plate_rect != null and is_instance_valid(_plate_rect) and _plate_rect.visible:
+		_update_plate(_plate_lbl, _plate_cursor)
+	if _cursor_lbl != null and is_instance_valid(_cursor_lbl) \
+			and _cursor_rect != null and is_instance_valid(_cursor_rect) and _cursor_rect.visible:
+		set_cursor_at(_cursor_lbl, true)
+
+
+func _collect_labels(node: Node, out: Array) -> void:
+	for c in node.get_children():
+		if c is Label:
+			out.append(c)
+		_collect_labels(c, out)
