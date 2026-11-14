@@ -18,6 +18,9 @@ signal bindings_changed(answer1: InputEvent, answer2: InputEvent)
 signal settings_changed(volume: float, sfx_volume: float, crt: bool,
 		music_fx: bool, reactivity: float)
 signal debug_free_requested()
+# Сброс мета-прогресса из CONFIG: экран просит, выполняет main (он владеет
+# MetaStore и сохранением user://).
+signal progress_reset_requested()
 
 var _layer: CanvasLayer
 var _font: Font
@@ -70,6 +73,7 @@ func show_config(settings: SettingsIO) -> void:
 	m.back_requested.connect(main_menu_requested.emit)
 	m.bindings_changed.connect(bindings_changed.emit)
 	m.settings_changed.connect(settings_changed.emit)
+	m.progress_reset_requested.connect(progress_reset_requested.emit)
 	transition_to(m)
 
 

@@ -8,6 +8,9 @@ var _page: int = 0
 var _locked: bool = false
 var _binding_text_1: String = "1"
 var _binding_text_2: String = "2"
+# Кликабельные строки навигации: {"label": Label, "kind": "prev"|"next"|"back"}.
+var _nav_rows: Array[Dictionary] = []
+var _hovered: int = -1
 
 
 func set_bindings(e1: InputEvent, e2: InputEvent) -> void:
@@ -43,6 +46,51 @@ func _show_page() -> void:
 		_show_page_1()
 	else:
 		_show_page_2()
+	_build_nav()
+
+
+# Кликабельная навигация (фидбек 2026-11-14: мышью должно быть можно
+# пользоваться везде). Две строки: переключение страниц (левая половина —
+# назад, правая — вперёд) и выход. Хит-зоны считаются по моноширинной
+# ячейке, как в config_menu._volume_click.
+func _build_nav() -> void:
+	_nav_rows.clear()
+	_hovered = -1
+	var prev_next := add_line("  < PREV PAGE        NEXT PAGE >  ", Color(0.7, 0.7, 0.7), 18)
+	var back := add_line("        [ ESC ]  BACK TO MENU         ", Color(0.7, 0.7, 0.7), 18)
+	_nav_rows = [
+		{"label": prev_next, "kind": "paging"},
+		{"label": back, "kind": "back"},
+	]
+
+
+func _nav_hit(pos: Vector2) -> int:
+	for i: int in _nav_rows.size():
+		var lbl: Label = _nav_rows[i]["label"]
+		if lbl != null and is_instance_valid(lbl) and lbl.get_global_rect().has_point(pos):
+			return i
+	return -1
+
+
+func _nav_action(index: int, pos: Vector2) -> void:
+	var kind := String(_nav_rows[index]["kind"])
+	SFX.key()
+	if kind == "back":
+		_go_back()
+		return
+	# Строка paging: левая половина — предыдущая страница, правая — следующая.
+	var lbl: Label = _nav_rows[index]["label"]
+	var cell: float = _cell_width(lbl)
+	var rel_columns: float = (pos.x - lbl.get_global_rect().position.x) / cell if cell > 0.0 else 0.0
+	if rel_columns < float(lbl.text.find("NEXT")) * 0.5:
+		_flip_page(-1)
+	else:
+		_flip_page(1)
+
+
+func _flip_page(step: int) -> void:
+	_page = (_page + step + PAGES) % PAGES
+	_show_page()
 
 
 func _render(lines: Array) -> void:
@@ -89,10 +137,10 @@ func _show_page_1() -> void:
 		{"text": "    3 STROOPTEST   чернила против названия слова:", "size": 19, "color": GREEN},
 		{"text": "        КРАСНЫЙ", "size": 22, "color": Color(0.15, 0.25, 0.95)},
 		{"text": "        ^ синие чернила — не совпало -> [1]", "size": 16, "color": GRAY},
-		{"text": "    4 THE SEQUENCE все задания вперемешку", "size": 19, "color": RED},
+		{"text": "    4 THE SEQUENCE вперемешку, угол случайный", "size": 19, "color": RED},
 		{"text": "", "size": 8},
 		{"text": "    Модификаторы по ходу забега — на стр. 2.", "size": 19},
-		{"text": "  [2] / [->] — далее    [ESC] / [ENTER] — назад", "size": 16, "color": GRAY},
+		{"text": "  [2] / [->] / КОЛЕСО — далее    [ESC] / [ENTER] — назад", "size": 16, "color": GRAY},
 	]
 	_render(lines)
 
@@ -121,7 +169,7 @@ func _show_page_2() -> void:
 		{"text": "    Допуск ошибок и откат покупаются в SYSTEM UPDATE;", "size": 19},
 		{"text": "    без допуска любая ошибка фатальна. Комбо 400 = победа.", "size": 19},
 		{"text": "", "size": 8},
-		{"text": "  [1] / [<-] — назад    [ESC] / [ENTER] — выход", "size": 16, "color": GRAY},
+		{"text": "  [1] / [<-] — назад    [ESC] / [ENTER] — выход    МЫШЬ: клик по строкам", "size": 16, "color": GRAY},
 	]
 	_render(lines)
 
@@ -129,15 +177,36 @@ func _show_page_2() -> void:
 func _input(event: InputEvent) -> void:
 	if _locked:
 		return
+	# Мышь: наведение подсвечивает строку, ЛКМ срабатывает, колесо листает.
+	if event is InputEventMouseMotion:
+		_update_hover(event.position)
+		return
+	if event is InputEventMouseButton and event.pressed:
+		match event.button_index:
+			MOUSE_BUTTON_LEFT:
+				var index := _nav_hit(event.position)
+				if index >= 0:
+					get_viewport().set_input_as_handled()
+					_nav_action(index, event.position)
+				return
+			MOUSE_BUTTON_WHEEL_UP:
+				get_viewport().set_input_as_handled()
+				_flip_page(-1)
+				return
+			MOUSE_BUTTON_WHEEL_DOWN:
+				get_viewport().set_input_as_handled()
+				_flip_page(1)
+				return
+			_:
+				return
+
 	if event is InputEventKey and event.pressed and not event.echo:
 		# Экран — единственный потребитель: не даём ивенту долететь до игры.
 		get_viewport().set_input_as_handled()
 		match event.keycode:
 			KEY_ESCAPE, KEY_ENTER, KEY_KP_ENTER:
 				SFX.key()
-				_locked = true
-				clear_instant()
-				back_requested.emit()
+				_go_back()
 			KEY_1:
 				SFX.key()
 				_page = 0
@@ -148,9 +217,24 @@ func _input(event: InputEvent) -> void:
 				_show_page()
 			KEY_LEFT:
 				SFX.key()
-				_page = (_page - 1 + PAGES) % PAGES
-				_show_page()
+				_flip_page(-1)
 			KEY_RIGHT:
 				SFX.key()
-				_page = (_page + 1) % PAGES
-				_show_page()
+				_flip_page(1)
+
+
+func _go_back() -> void:
+	_locked = true
+	clear_instant()
+	back_requested.emit()
+
+
+func _update_hover(pos: Vector2) -> void:
+	var index := _nav_hit(pos)
+	if index == _hovered:
+		return
+	_hovered = index
+	for i: int in _nav_rows.size():
+		var lbl: Label = _nav_rows[i]["label"]
+		if lbl != null and is_instance_valid(lbl):
+			set_inverted(lbl, i == index)
